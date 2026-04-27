@@ -5,3 +5,6 @@
 /outputs/
 paperscout/
 .codex
+Agent-R1-lagacy/
+__pycache__/
+*.pyc
