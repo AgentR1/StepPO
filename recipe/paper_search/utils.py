@@ -1,5 +1,6 @@
 import asyncio
-import pickle
+import logging
+import os
 from functools import total_ordering
 from typing import Any, Optional
 
@@ -9,236 +10,93 @@ from sortedcontainers import SortedList
 
 from .http_retry import httpx_request_with_retry
 
-ZIP_INDEX_DICT = {
-    "warning": pickle.load(open("/data/tingyue/workspace/oyj/arxiv_database/id2paper_warning.pkl", "rb")),
-    "no_problem": pickle.load(open("/data/tingyue/workspace/oyj/arxiv_database/id2paper_no_problem.pkl", "rb")),
-}
+logger = logging.getLogger(__file__)
+DEFAULT_PAPER_FIELDS = "title,abstract,year,authors,externalIds"
+
+
+def _format_authors(authors: Any) -> str:
+    if not authors:
+        return ""
+    if isinstance(authors, str):
+        return authors
+    if isinstance(authors, list):
+        names: list[str] = []
+        for author in authors:
+            if isinstance(author, dict):
+                name = author.get("name")
+                if name:
+                    names.append(str(name))
+            elif author:
+                names.append(str(author))
+        return ", ".join(names)
+    return str(authors)
 
 
 class Paper(BaseModel):
-    arxiv_id: str
+    paper_id: str
+    raw_paper_id: str = ""
+    arxiv_id: str = ""
     title: str
     abstract: str
-    categories: str = ""
     authors: str = ""
-    update_date: str = ""
-    score: float = 0.0  # 检索分数，不用于排序
-
-
-class QueueStats(BaseModel):
-    queue_size: int
-    max_queue_size: int
-    batch_size: int
-    batch_timeout: float
-    # BatchProcessor runtime metrics
-    running: bool
-    task_done: bool
-    last_exception: Optional[str] = None
-    submitted_total: int
-    dequeued_total: int
-    processed_total: int
-    batches_total: int
-    last_batch_size: int
-    last_process_age_sec: Optional[float] = None
+    year: Optional[int] = None
+    score: float = 0.0
 
 
 @total_ordering
 class PaperPoolEntry(BaseModel):
     paper: Paper
-    source: str  # 'search' 或 'expand'
-    origin: str  # 如果 source='search'，origin 表示 query；如果 source='expand'，origin 表示父 paper 的 title
-    score: float  # 论文的分数，用于排序
-    expand: bool = False  # 是否已经扩展
-    exist_local: bool = False  # 是否存在本地
+    source: str
+    origin: str
+    score: float
+    expand: bool = False
 
-    def __lt__(self, other):
+    def __lt__(self, other: object) -> bool:
         if not isinstance(other, PaperPoolEntry):
             return NotImplemented
         if self.score != other.score:
             return self.score < other.score
-        return self.paper.arxiv_id < other.paper.arxiv_id
+        return self.paper.paper_id < other.paper.paper_id
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, PaperPoolEntry):
             return NotImplemented
-        return self.score == other.score and self.paper.arxiv_id == other.paper.arxiv_id
+        return self.score == other.score and self.paper.paper_id == other.paper.paper_id
 
-    def __hash__(self):
-        return hash(self.paper.arxiv_id)
-
-
-class ArXivClient:
-    def __init__(
-        self,
-        base_url: str = "http://localhost:8765",
-        timeout: float = 30.0,
-        *,
-        max_concurrency: Optional[int] = 16,
-        max_fulltext_concurrency: Optional[int] = 8,
-    ):
-        self.base_url = base_url.rstrip("/")
-
-        # 使用持久化 session
-        self.client = httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(timeout, connect=10.0, pool=60.0),
-            limits=httpx.Limits(max_connections=1024, max_keepalive_connections=128),
-        )
-
-        self._semaphore: Optional[asyncio.Semaphore] = (
-            asyncio.Semaphore(max_concurrency) if max_concurrency and max_concurrency > 0 else None
-        )
-        # 独立的信号量用于控制 get_fulltext 的并发，避免服务端过载
-        self._fulltext_semaphore: Optional[asyncio.Semaphore] = (
-            asyncio.Semaphore(max_fulltext_concurrency)
-            if max_fulltext_concurrency and max_fulltext_concurrency > 0
-            else None
-        )
-
-    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
-        return await httpx_request_with_retry(self.client, method, url, semaphore=self._semaphore, **kwargs)
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-
-    async def close(self):
-        """关闭底层 HTTP 连接"""
-        await self.client.aclose()
-
-    async def search(self, query: str, top_k: int = 10, filter_expr: Optional[str] = None) -> list[Paper]:
-        """语义搜索"""
-        params = {"q": query, "top_k": top_k}
-        if filter_expr:
-            params["filter"] = filter_expr
-
-        resp = await self._request("GET", "/search", params=params)
-        resp.raise_for_status()
-
-        # Pydantic 自动解析列表中的字典
-        return [Paper(**item) for item in resp.json()]
-
-    async def query(self, filter_expr: str, top_k: int = 10) -> list[Paper]:
-        """条件/关键字查询 (非向量搜索)"""
-        params = {"filter": filter_expr, "top_k": top_k}
-        resp = await self._request("GET", "/query", params=params)
-        resp.raise_for_status()
-        return [Paper(**item) for item in resp.json()]
-
-    async def lookup_by_title(self, title: str) -> list[Paper]:
-        """根据标题精确查找"""
-        params = {"title": title}
-        resp = await self._request("GET", "/lookup", params=params)
-        resp.raise_for_status()
-        return [Paper(**item) for item in resp.json()]
-
-    @staticmethod
-    def _record_to_paper(data: dict[str, Any]) -> Paper:
-        """
-        Convert server record (Milvus raw dict) into Paper.
-
-        Server may return `id` instead of `arxiv_id` for /paper/{arxiv_id}.
-        """
-        # Prefer explicit arxiv_id, fallback to id.
-        arxiv_id = data.get("arxiv_id") or data.get("id") or ""
-        return Paper(
-            arxiv_id=arxiv_id,
-            title=data.get("title", "") or "",
-            abstract=data.get("abstract", "") or "",
-            categories=data.get("categories", "") or "",
-            authors=data.get("authors", "") or "",
-            update_date=data.get("update_date", "") or "",
-            score=float(data.get("score", 0.0) or 0.0),
-        )
-
-    async def get_paper(self, arxiv_id: str) -> Optional[Paper]:
-        """获取单篇论文详情"""
-        resp = await self._request("GET", f"/paper/{arxiv_id}")
-        resp.raise_for_status()
-        data = resp.json()
-        return self._record_to_paper(data) if data else None
-
-    async def get_fulltext(self, arxiv_id: str, download: bool = False) -> Optional[dict[str, Any]]:
-        """获取论文全文 (HTML JSON 结构)
-
-        使用独立的信号量控制并发，避免一次性请求过多导致服务端崩溃。
-        """
-        resp = await httpx_request_with_retry(
-            self.client,
-            "GET",
-            f"/paper/{arxiv_id}/fulltext",
-            params={"download": download},
-            semaphore=self._fulltext_semaphore,
-        )
-        try:
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            error_body = resp.json()
-            raise RuntimeError(error_body.get("detail", "Unknown server error")) from e
-
-    async def health(self) -> dict:
-        """健康检查"""
-        resp = await self._request("GET", "/health")
-        return resp.json()
-
-    async def queue_stats(self) -> QueueStats:
-        """查看批处理队列状态"""
-        resp = await self._request("GET", "/queue")
-        resp.raise_for_status()
-        return QueueStats(**resp.json())
+    def __hash__(self) -> int:
+        return hash(self.paper.paper_id)
 
 
 class PaperPool:
     def __init__(self, max_size: int = 20, threshold: float = 0.0, max_abstract_words: int = 400):
-        self.papers = {}  # arxiv_id -> PaperPoolEntry
-        self.ranked_papers = SortedList()
+        self.papers: dict[str, PaperPoolEntry] = {}
+        self.ranked_papers: SortedList[PaperPoolEntry] = SortedList()
         self.max_size = max_size
         self.threshold = threshold
         self.max_abstract_words = max_abstract_words
 
-        self.exist_local_papers = set()
-        for zip_name, zip_index in ZIP_INDEX_DICT.items():
-            self.exist_local_papers.update(zip_index.keys())
-
-    def add_paper(self, paper: Paper, source: str, origin: str, score: float):
-        if paper.arxiv_id in self.papers:
+    def add_paper(self, paper: Paper, source: str, origin: str, score: float) -> None:
+        if paper.paper_id in self.papers:
             return
 
-        arxiv_id = paper.arxiv_id.split("v")[0]
-        exist_local = True if arxiv_id in self.exist_local_papers else False
-
-        paper_pool_entry = PaperPoolEntry(
-            paper=paper, source=source, origin=origin, score=score, exist_local=exist_local
-        )
-        self.papers[paper.arxiv_id] = paper_pool_entry
+        paper_pool_entry = PaperPoolEntry(paper=paper, source=source, origin=origin, score=score)
+        self.papers[paper.paper_id] = paper_pool_entry
         self.ranked_papers.add(paper_pool_entry)
 
-    def get_paper(self, arxiv_id: str) -> Optional[PaperPoolEntry]:
-        return self.papers.get(arxiv_id)
+    def get_paper(self, paper_id: str) -> Optional[PaperPoolEntry]:
+        return self.papers.get(paper_id)
 
-    def has_paper(self, arxiv_id: str) -> bool:
-        return arxiv_id in self.papers
+    def has_paper(self, paper_id: str) -> bool:
+        return paper_id in self.papers
 
     @property
     def paper_list(self) -> str:
-        """
-        Format the paper list into a string.
-        The list includes up to max_size/2 expanded papers ([EXP]) and max_size/2 unexpanded papers ([NEW]).
-        Abstracts are truncated to a maximum length.
-        """
         if not self.papers:
             return "No papers in the pool."
 
-        # 分离已扩展和未扩展的论文，并按分数从高到低排序
-        expanded_entries = [e for e in self.ranked_papers if e.expand and e.score >= self.threshold and e.exist_local]
-        unexpanded_entries = [
-            e for e in self.ranked_papers if not e.expand and e.score >= self.threshold and e.exist_local
-        ]
+        expanded_entries = [e for e in self.ranked_papers if e.expand and e.score >= self.threshold]
+        unexpanded_entries = [e for e in self.ranked_papers if not e.expand and e.score >= self.threshold]
 
-        # SortedList 是升序的，所以我们需要 reverse
         expanded_entries.reverse()
         unexpanded_entries.reverse()
 
@@ -246,7 +104,6 @@ class PaperPool:
         top_expanded = expanded_entries[:half_size]
         top_unexpanded = unexpanded_entries[:half_size]
 
-        # 合并并再次按分数排序
         display_entries = top_expanded + top_unexpanded
         display_entries.sort(key=lambda x: x.score, reverse=True)
 
@@ -255,47 +112,190 @@ class PaperPool:
 
         description = (
             "Paper Pool Status:\n"
-            "- [EXP]: Paper has been expanded (already used as a seed for more papers).\n"
-            "- [NEW]: New paper found via search or expansion, candidate for further exploration.\n"
-            "- Format: [arxiv_id] (score) [STATUS] Title\n"
+            "- [EXP]: Paper has been expanded already.\n"
+            "- [NEW]: New paper found via search or expansion.\n"
+            "- Format: [paper_id] (score) [STATUS] Title\n"
         )
 
         lines = [description]
         for entry in display_entries:
             paper = entry.paper
             status_tag = "[EXP]" if entry.expand else "[NEW]"
-
-            # 截断摘要
             abstract = paper.abstract
             words = abstract.split()
             if len(words) > self.max_abstract_words:
                 abstract = " ".join(words[: self.max_abstract_words]) + "..."
 
-            entry_str = f"[{paper.arxiv_id}] ({entry.score:.2f}) {status_tag} {paper.title}\nAbstract: {abstract}"
+            entry_str = f"[{paper.paper_id}] ({entry.score:.2f}) {status_tag} {paper.title}\nAbstract: {abstract}"
             lines.append(entry_str)
 
         return "\n\n".join(lines)
 
 
-def parse_full_paper_to_specific_sections(d, key_words: list, result=None):
-    """
-    递归检索所有key为'title'，且value包含'Introduction'或'Related Work'关键字的章节信息。
-    d: 可能为dict, list, 或其他类型
-    result: 结果列表，元素为({父dict/section}, title字符串)
-    """
-    if result is None:
-        result = []
-    if isinstance(d, dict):
-        title = d.get("title")
-        if isinstance(title, str):
-            # 检查是否包含任意关键字
-            for kw in key_words:
-                if kw.lower() in title.lower():
-                    result.append(d)
-                    break
-        for v in d.values():
-            parse_full_paper_to_specific_sections(v, key_words, result)
-    elif isinstance(d, list):
-        for item in d:
-            parse_full_paper_to_specific_sections(item, key_words, result)
-    return result
+class PaperSearchClient:
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        timeout: float = 30.0,
+        *,
+        max_concurrency: Optional[int] = 16,
+        max_detail_concurrency: Optional[int] = 16,
+        max_retries: int = 3,
+        initial_backoff: float = 0.5,
+        max_backoff: float = 8.0,
+    ):
+        self.base_url = (
+            base_url
+            or os.getenv("PAPER_SEARCH_BASE_URL")
+            or "http://localhost:4000"
+        ).rstrip("/")
+        self.client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(timeout, connect=10.0, pool=60.0),
+            limits=httpx.Limits(max_connections=1024, max_keepalive_connections=128),
+        )
+        self._semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency and max_concurrency > 0 else None
+        self._detail_semaphore = (
+            asyncio.Semaphore(max_detail_concurrency) if max_detail_concurrency and max_detail_concurrency > 0 else None
+        )
+        self.max_retries = max_retries
+        self.initial_backoff = initial_backoff
+        self.max_backoff = max_backoff
+
+    async def _request(
+        self, method: str, url: str, *, semaphore: Optional[asyncio.Semaphore] = None, **kwargs: Any
+    ) -> httpx.Response:
+        sem = self._semaphore if semaphore is None else semaphore
+        total_attempts = self.max_retries + 1
+        try:
+            resp = await httpx_request_with_retry(
+                self.client,
+                method,
+                url,
+                semaphore=sem,
+                max_retries=self.max_retries,
+                retry_status_codes={503},
+                retry_exceptions=(httpx.RequestError, httpx.TimeoutException),
+                initial_backoff=self.initial_backoff,
+                max_backoff=self.max_backoff,
+                **kwargs,
+            )
+        except (httpx.RequestError, httpx.TimeoutException) as exc:
+            logger.warning(
+                "Request failed after %d retries (%d total attempts): %s %s. Last error: %r",
+                self.max_retries,
+                total_attempts,
+                method,
+                url,
+                exc,
+            )
+            raise
+
+        if resp.status_code == 503:
+            logger.warning(
+                "Request returned 503 after %d retries (%d total attempts): %s %s",
+                self.max_retries,
+                total_attempts,
+                method,
+                url,
+            )
+        return resp
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+    async def __aenter__(self) -> "PaperSearchClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
+
+    @staticmethod
+    def _record_to_paper(data: dict[str, Any]) -> Paper:
+        raw_paper_id = str(data.get("paperId") or data.get("paper_id") or "")
+        external_ids = data.get("externalIds") or {}
+        arxiv_id = str(data.get("arxiv_id") or external_ids.get("ArXiv") or "")
+        paper_id = arxiv_id or raw_paper_id
+        return Paper(
+            paper_id=paper_id,
+            raw_paper_id=raw_paper_id,
+            arxiv_id=arxiv_id,
+            title=str(data.get("title") or ""),
+            abstract=str(data.get("abstract") or ""),
+            authors=_format_authors(data.get("authors")),
+            year=data.get("year"),
+            score=float(data.get("score", 0.0) or 0.0),
+        )
+
+    @staticmethod
+    def _extract_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        data = payload.get("data")
+        return data if isinstance(data, list) else []
+
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        year: Optional[str] = None,
+        min_citation_count: Optional[int] = None,
+        fields: str = DEFAULT_PAPER_FIELDS,
+    ) -> list[Paper]:
+        params: dict[str, Any] = {"query": query, "limit": limit}
+        if year:
+            params["year"] = year
+        if min_citation_count is not None:
+            params["minCitationCount"] = min_citation_count
+        if fields:
+            params["fields"] = fields
+
+        resp = await self._request("GET", "/paper/search", params=params)
+        resp.raise_for_status()
+        payload = resp.json()
+        return [self._record_to_paper(item) for item in self._extract_items(payload)]
+
+    async def get_paper(self, paper_id: str, fields: str = DEFAULT_PAPER_FIELDS) -> Optional[Paper]:
+        params = {"fields": fields} if fields else None
+        resp = await self._request("GET", f"/paper/{paper_id}", params=params, semaphore=self._detail_semaphore)
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, dict) or not data:
+            return None
+        return self._record_to_paper(data)
+
+    async def get_citations(
+        self, paper_id: str, limit: int = 50, fields: str = DEFAULT_PAPER_FIELDS
+    ) -> list[Paper]:
+        params: dict[str, Any] = {"limit": limit}
+        if fields:
+            params["fields"] = fields
+        resp = await self._request("GET", f"/paper/{paper_id}/citations", params=params)
+        resp.raise_for_status()
+        payload = resp.json()
+        items = self._extract_items(payload)
+        papers: list[Paper] = []
+        for item in items:
+            citing_paper = item.get("citingPaper")
+            if isinstance(citing_paper, dict):
+                papers.append(self._record_to_paper(citing_paper))
+        return papers
+
+    async def get_references(
+        self, paper_id: str, limit: int = 50, fields: str = DEFAULT_PAPER_FIELDS
+    ) -> list[Paper]:
+        if limit < 0:
+            limit = 99
+
+        params: dict[str, Any] = {"limit": limit}
+        if fields:
+            params["fields"] = fields
+        resp = await self._request("GET", f"/paper/{paper_id}/references", params=params)
+        resp.raise_for_status()
+        payload = resp.json()
+        items = self._extract_items(payload)
+        papers: list[Paper] = []
+        for item in items:
+            cited_paper = item.get("citedPaper")
+            if isinstance(cited_paper, dict):
+                papers.append(self._record_to_paper(cited_paper))
+        return papers

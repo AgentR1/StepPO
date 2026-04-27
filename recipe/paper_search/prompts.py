@@ -1,6 +1,6 @@
 PAPERSEARCH_SYSTEM_PROMPT = "You are a research agent. Your goal is to find papers relevant to the User Query."
 
-PAPERSEARCH_USER_PROMPT = """### User Query 
+PAPERSEARCH_USER_PROMPT = """### User Query
 {user_query}
 
 ### History Actions
@@ -12,7 +12,7 @@ PAPERSEARCH_USER_PROMPT = """### User Query
 ### Instructions
 Analyze the **Paper List** and **History Actions** to determine the next set of actions. Enclose your analysis of the state and decision logic within `<analysis>...</analysis>` tags.
 **You support parallel tool calling.** You should output multiple tool calls in a single step if several independent actions are valuable at the current state.
-**Attend to the history actions and avoid expanding the same papers.**
+**Attend to the history actions and avoid repeating the same search query or expanding the same paper.**
 
 ### Output Format
 <analysis>
@@ -36,23 +36,22 @@ Abstract: {abstract}
 User Query: {user_query}
 
 Output format: Decision: True/False
-Reason:... 
+Reason:...
 Decision:"""
 
-# OpenAI-compatible tool schemas for PaperSearch actions.
 SEARCH_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "search",
-        "description": ("Search for relevant papers in the arXiv repository."),
+        "description": "Search for relevant papers with the hybrid retrieval API.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
                     "description": (
-                        "A single search query (natural language or keywords). "
-                        "No field scopes (ti:/abs:) or boolean ops. Must differ from all history queries."
+                        "A single search query in natural language or keywords. "
+                        "Must differ from all history queries."
                     ),
                 }
             },
@@ -66,20 +65,17 @@ EXPAND_TOOL_SCHEMA = {
     "function": {
         "name": "expand",
         "description": (
-            "Expand from an existing paper by following its references to surface additional relevant works. "
-            "Use this when search is saturated and you want to broaden coverage around a known paper."
+            "Expand from an existing paper by merging its citations and references to surface more related works."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "arxiv_id": {
+                "paper_id": {
                     "type": "string",
-                    "description": (
-                        "The arXiv identifier (e.g., '1706.03762') of a paper already in the current paper list."
-                    ),
+                    "description": "The paper identifier of a paper already present in the current paper list.",
                 }
             },
-            "required": ["arxiv_id"],
+            "required": ["paper_id"],
         },
     },
 }
