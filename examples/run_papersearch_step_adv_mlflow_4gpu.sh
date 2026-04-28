@@ -1,3 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_NAME="$(basename "$0" .sh)"
+LOG_ROOT="${LOG_ROOT:-$(pwd)/logs}"
+LOG_DIR="${LOG_DIR:-$LOG_ROOT/papersearch}"
+mkdir -p "$LOG_DIR"
+TIMESTAMP="$(date -u +%Y%m%d_%H%M%S)"
+LOG_FILE="${LOG_FILE:-$LOG_DIR/${SCRIPT_NAME}_${TIMESTAMP}.log}"
+
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "Logging to $LOG_FILE"
 set -x
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,3,4,7}
@@ -7,6 +19,7 @@ export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
 export HYDRA_FULL_ERROR=1
 export MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-http://127.0.0.1:5000}
 export PAPER_SEARCH_BASE_URL=${PAPER_SEARCH_BASE_URL:-http://localhost:4000}
+export PAPERSEARCH_SELECTOR_BASE_URL=${PAPERSEARCH_SELECTOR_BASE_URL:-http://localhost:8000}
 
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/recipe/paper_search/base.yaml"
@@ -16,7 +29,7 @@ PAPERSEARCH_MAX_PROMPT_LEN=${PAPERSEARCH_MAX_PROMPT_LEN:-10240}
 PAPERSEARCH_MAX_RESPONSE_LEN=${PAPERSEARCH_MAX_RESPONSE_LEN:-4096}
 PAPERSEARCH_TRAIN_PATH="/root/workspace/StepPO/data/pasa/train.parquet"
 PAPERSEARCH_VAL_PATH="/root/workspace/StepPO/data/pasa/test.parquet"
-PAPERSEARCH_SELECTOR_MODEL_PATH="/root/workspace/StepPO/recipe/paper_search/selector-qwen3-8b/Melmaphother/selector-qwen-8b"
+export PAPERSEARCH_SELECTOR_MODEL_NAME=${PAPERSEARCH_SELECTOR_MODEL_NAME:-selector-qwen-8b}
 
 PROJECT_NAME=${PROJECT_NAME:-FALCON}
 EXP_NAME=${EXP_NAME:-papersearch_step_adv_mlflow_4gpu}
@@ -67,15 +80,7 @@ python3 -m arft.main_agent_ppo \
     critic.model.fsdp_config.param_offload=True \
     critic.model.fsdp_config.optimizer_offload=True \
     algorithm.use_kl_in_reward=False \
-    reward_model.enable=True \
-    reward_model.model.path="$PAPERSEARCH_SELECTOR_MODEL_PATH" \
-    reward_model.use_reward_loop=True \
-    reward_model.rollout.name=vllm \
-    reward_model.rollout.gpu_memory_utilization=0.49 \
-    reward_model.rollout.prompt_length=2048 \
-    reward_model.rollout.response_length=128 \
-    reward_model.rollout.tensor_model_parallel_size=1 \
-    reward_model.num_workers=1 \
+    reward_model.enable=False \
     trainer.critic_warmup=0 \
     trainer.logger='["console","swanlab","mlflow"]' \
     trainer.project_name="$PROJECT_NAME" \

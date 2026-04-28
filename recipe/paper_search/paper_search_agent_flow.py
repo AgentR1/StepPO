@@ -11,7 +11,7 @@ from transformers import AutoProcessor, AutoTokenizer
 from arft.agent_flow.agent_flow import AgentFlowBase, AgentFlowOutput, AgentFlowStep, register
 from arft.reward_loop import ARFTRewardLoopWorker as RewardLoopWorker
 from recipe.paper_search.prompts import PAPERSEARCH_SYSTEM_PROMPT, PAPERSEARCH_TOOL_SCHEMAS, PAPERSEARCH_USER_PROMPT, SELECT_PROMPT
-from recipe.paper_search.utils import Paper, PaperPool, PaperSearchClient
+from recipe.paper_search.utils import Paper, PaperPool, PaperSearchClient, SelectorClient
 from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager, DictConfigWrap
 from verl.experimental.agent_loop.tool_parser import ToolParser
 from verl.utils.profiler import simple_timer
@@ -50,6 +50,7 @@ class PaperSearchAgentFlow(AgentFlowBase):
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.tool_schemas = PAPERSEARCH_TOOL_SCHEMAS
         self.client = PaperSearchClient(timeout=30.0)
+        self.selector_client = SelectorClient(timeout=30.0)
 
         self.paper_pool = PaperPool()
         self._paper_pool_lock = threading.RLock()
@@ -290,10 +291,8 @@ class PaperSearchAgentFlow(AgentFlowBase):
     async def get_relevance_score(self, query: str, paper: Paper, **kwargs) -> float:
         prompt = SELECT_PROMPT.format(title=paper.title, abstract=paper.abstract, user_query=query)
         try:
-            result = await self.reward_loop_worker.compute_score_disrm.remote(prompt)
+            score = await self.selector_client.classify(prompt)
         except Exception as exc:
-            raise RuntimeError(
-                "PaperSearchAgentFlow relevance scoring uses RewardLoopWorker (DisRM). "
-                "Please ensure reward_model.enable=True and reward_model.model.path points to the selector model."
-            ) from exc
-        return float(1.0 - result["reward_score"])
+            logger.warning("Selector service failed for paper_id=%s: %r", paper.paper_id, exc)
+            return 0.0
+        return float(1.0 - score)

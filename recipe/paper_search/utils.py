@@ -299,3 +299,68 @@ class PaperSearchClient:
             if isinstance(cited_paper, dict):
                 papers.append(self._record_to_paper(cited_paper))
         return papers
+
+
+class SelectorClient:
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        model_name: Optional[str] = None,
+        timeout: float = 30.0,
+        *,
+        max_retries: int = 3,
+        initial_backoff: float = 0.5,
+        max_backoff: float = 8.0,
+    ):
+        self.base_url = (base_url or os.getenv("PAPERSEARCH_SELECTOR_BASE_URL") or "http://localhost:8000").rstrip("/")
+        self.model_name = (
+            model_name
+            or os.getenv("PAPERSEARCH_SELECTOR_MODEL_NAME")
+            or os.getenv("PAPERSEARCH_SELECTOR_MODEL_PATH")
+            or ""
+        )
+        self.client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(timeout, connect=10.0, pool=60.0),
+            limits=httpx.Limits(max_connections=256, max_keepalive_connections=64),
+        )
+        self.max_retries = max_retries
+        self.initial_backoff = initial_backoff
+        self.max_backoff = max_backoff
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+    async def __aenter__(self) -> "SelectorClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
+
+    async def classify(self, prompt: str) -> float:
+        payload: dict[str, Any] = {"input": prompt, "activation": False}
+        if self.model_name:
+            payload["model"] = self.model_name
+
+        resp = await httpx_request_with_retry(
+            self.client,
+            "POST",
+            "/classify",
+            json=payload,
+            max_retries=self.max_retries,
+            retry_status_codes={429, 500, 502, 503, 504},
+            retry_exceptions=(httpx.RequestError, httpx.TimeoutException),
+            initial_backoff=self.initial_backoff,
+            max_backoff=self.max_backoff,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data")
+        if not isinstance(data, list) or not data:
+            raise ValueError(f"Invalid selector response payload: {resp.text[:512]}")
+
+        last_item = data[-1]
+        probs = last_item.get("probs") if isinstance(last_item, dict) else None
+        if not isinstance(probs, list) or not probs:
+            raise ValueError(f"Invalid selector response probs: {resp.text[:512]}")
+
+        return float(probs[-1])

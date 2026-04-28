@@ -3,6 +3,7 @@
 /stat/
 /.venv/
 /outputs/
+/logs/
 paperscout/
 .codex
 Agent-R1-lagacy/
