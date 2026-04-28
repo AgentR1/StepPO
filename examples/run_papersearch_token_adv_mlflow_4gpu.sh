@@ -11,12 +11,12 @@ export PAPER_SEARCH_BASE_URL=${PAPER_SEARCH_BASE_URL:-http://localhost:4000}
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/recipe/paper_search/base.yaml"
 
-PAPERSEARCH_MODEL_PATH=${PAPERSEARCH_MODEL_PATH:-Qwen/Qwen3-4B-Instruct-2507}
+PAPERSEARCH_MODEL_PATH="/root/.cache/huggingface/qwen/Qwen3-4B-Instruct-2507"
 PAPERSEARCH_MAX_PROMPT_LEN=${PAPERSEARCH_MAX_PROMPT_LEN:-10240}
 PAPERSEARCH_MAX_RESPONSE_LEN=${PAPERSEARCH_MAX_RESPONSE_LEN:-4096}
-PAPERSEARCH_TRAIN_PATH=${PAPERSEARCH_TRAIN_PATH:-$HOME/data/pasa/train.parquet}
-PAPERSEARCH_VAL_PATH=${PAPERSEARCH_VAL_PATH:-$HOME/data/pasa/test.parquet}
-PAPERSEARCH_SELECTOR_MODEL_PATH=${PAPERSEARCH_SELECTOR_MODEL_PATH:-$PAPERSEARCH_MODEL_PATH}
+PAPERSEARCH_TRAIN_PATH="/root/workspace/StepPO/data/pasa/train.parquet"
+PAPERSEARCH_VAL_PATH="/root/workspace/StepPO/data/pasa/test.parquet"
+PAPERSEARCH_SELECTOR_MODEL_PATH="/root/workspace/StepPO/recipe/paper_search/selector-qwen3-8b/Melmaphother/selector-qwen-8b"
 
 PROJECT_NAME=${PROJECT_NAME:-FALCON}
 EXP_NAME=${EXP_NAME:-papersearch_token_adv_mlflow_4gpu}
@@ -84,7 +84,7 @@ python3 -m arft.main_agent_ppo \
     trainer.nnodes=1 \
     trainer.val_before_train=True \
     trainer.save_freq=100 \
-    trainer.test_freq=50 \
+    trainer.test_freq=20 \
     trainer.max_actor_ckpt_to_keep=3 \
     trainer.max_critic_ckpt_to_keep=3 \
     trainer.total_epochs=20 "$@"

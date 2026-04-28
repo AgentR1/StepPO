@@ -1,22 +1,22 @@
 set -x
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,3,4,7}
 export VLLM_USE_V1=1
 export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
 export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
 export HYDRA_FULL_ERROR=1
-export MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-http://127.0.0.1:8080}
+export MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-http://127.0.0.1:5000}
 export PAPER_SEARCH_BASE_URL=${PAPER_SEARCH_BASE_URL:-http://localhost:4000}
 
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/recipe/paper_search/base.yaml"
 
-PAPERSEARCH_MODEL_PATH=${PAPERSEARCH_MODEL_PATH:-Qwen/Qwen3-4B-Instruct-2507}
+PAPERSEARCH_MODEL_PATH="/root/.cache/huggingface/qwen/Qwen3-4B-Instruct-2507"
 PAPERSEARCH_MAX_PROMPT_LEN=${PAPERSEARCH_MAX_PROMPT_LEN:-10240}
 PAPERSEARCH_MAX_RESPONSE_LEN=${PAPERSEARCH_MAX_RESPONSE_LEN:-4096}
-PAPERSEARCH_TRAIN_PATH=${PAPERSEARCH_TRAIN_PATH:-$HOME/data/pasa/train.parquet}
-PAPERSEARCH_VAL_PATH=${PAPERSEARCH_VAL_PATH:-$HOME/data/pasa/test.parquet}
-PAPERSEARCH_SELECTOR_MODEL_PATH=${PAPERSEARCH_SELECTOR_MODEL_PATH:-$PAPERSEARCH_MODEL_PATH}
+PAPERSEARCH_TRAIN_PATH="/root/workspace/StepPO/data/pasa/train.parquet"
+PAPERSEARCH_VAL_PATH="/root/workspace/StepPO/data/pasa/test.parquet"
+PAPERSEARCH_SELECTOR_MODEL_PATH="/root/workspace/StepPO/recipe/paper_search/selector-qwen3-8b/Melmaphother/selector-qwen-8b"
 
 PROJECT_NAME=${PROJECT_NAME:-FALCON}
 EXP_NAME=${EXP_NAME:-papersearch_step_adv_mlflow_4gpu}
@@ -50,7 +50,7 @@ python3 -m arft.main_agent_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.rollout.agent.agent_flow_config_path="$CONFIG_PATH" \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
@@ -71,7 +71,7 @@ python3 -m arft.main_agent_ppo \
     reward_model.model.path="$PAPERSEARCH_SELECTOR_MODEL_PATH" \
     reward_model.use_reward_loop=True \
     reward_model.rollout.name=vllm \
-    reward_model.rollout.gpu_memory_utilization=0.3 \
+    reward_model.rollout.gpu_memory_utilization=0.49 \
     reward_model.rollout.prompt_length=2048 \
     reward_model.rollout.response_length=128 \
     reward_model.rollout.tensor_model_parallel_size=1 \
@@ -84,7 +84,7 @@ python3 -m arft.main_agent_ppo \
     trainer.nnodes=1 \
     trainer.val_before_train=True \
     trainer.save_freq=100 \
-    trainer.test_freq=50 \
+    trainer.test_freq=20 \
     trainer.max_actor_ckpt_to_keep=3 \
     trainer.max_critic_ckpt_to_keep=3 \
     trainer.total_epochs=20 "$@"
