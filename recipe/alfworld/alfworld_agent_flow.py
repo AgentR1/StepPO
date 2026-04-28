@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -20,16 +22,6 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 @register("alfworld_agent")
 class AlfworldAgentFlow(AgentFlowBase):
-    """
-    Multi-step ALFWorld agent:
-
-    - Tools: env_step (text command into ALFWorldEnvWrapper)
-    - Reward:
-      * Tool steps: optionally use env dense reward as shaping (here left as 0.0 by default).
-      * Final step (no tool calls or done=True): reward_score=None so rule-based
-        reward (success/fail) can be computed via custom_reward_function if desired.
-    """
-
     def __init__(
         self,
         trainer_config: DictConfigWrap,
@@ -41,7 +33,8 @@ class AlfworldAgentFlow(AgentFlowBase):
     ):
         super().__init__(trainer_config, server_manager, reward_loop_worker, tokenizer, processor, **kwargs)
         self.max_steps = kwargs.get("max_steps", 20)
-        self.max_parallel_calls = 1  # env is inherently single-step
+        self.max_parallel_calls = 1
+        self.max_episode_steps = kwargs.get("max_episode_steps", 50)
 
         self.tool_parser = ToolParser.get_tool_parser(
             self.config.actor_rollout_ref.rollout.multi_turn.format,
@@ -51,25 +44,22 @@ class AlfworldAgentFlow(AgentFlowBase):
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.tool_schemas = ALFWORLD_TOOL_SCHEMAS
 
-        env_name = kwargs.get("env_name", "alfworld_train")
-        self.executor = AlfworldToolExecutor(env_name=env_name)
-
+        self.executor = AlfworldToolExecutor(max_episode_steps=self.max_episode_steps)
         self.current_observation: str = ""
-        self.goal: str = ""
         self.history_actions: list[str] = []
         self.steps: list[AgentFlowStep] = []
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentFlowOutput:
-        raw_prompt = list(kwargs["raw_prompt"])
-        # Dataset provides initial instruction as first user message.
-        self.goal = raw_prompt[0]["content"]
-
-        # extra_info may contain task_id, etc.
         extra_info = kwargs.get("extra_info") or {}
         task_id = extra_info.get("task_id")
+        split = extra_info.get("split", "train")
+        task_type_raw = extra_info.get("task_type_raw")
+        task_family = extra_info.get("task_family")
+        game_relative_path = extra_info.get("game_relative_path")
+        if not game_relative_path:
+            raise ValueError("ALFWorld sample is missing extra_info.game_relative_path")
 
-        # Reset env and get initial observation.
-        self.current_observation = self.executor.reset(task_id=task_id)
+        self.current_observation = self.executor.reset(game_relative_path=game_relative_path, task_id=task_id)
         self.history_actions = []
         self.steps = []
 
@@ -89,15 +79,11 @@ class AlfworldAgentFlow(AgentFlowBase):
                     "content": ALFWORLD_USER_PROMPT.format(
                         observation=self.current_observation,
                         history_actions=format_history_actions(self.history_actions),
-                        goal=self.goal,
                     ),
                 },
             ]
 
-            prompt_ids = await self.apply_chat_template(
-                messages,
-                tools=self.tool_schemas,
-            )
+            prompt_ids = await self.apply_chat_template(messages, tools=self.tool_schemas)
 
             with simple_timer("generate_sequences", metrics):
                 output = await self.server_manager.generate(
@@ -109,26 +95,28 @@ class AlfworldAgentFlow(AgentFlowBase):
             response_ids = output.token_ids[: self.response_length]
             _, tool_calls = await self.tool_parser.extract_tool_calls(response_ids)
 
-            # If no tool call, we treat as final step: let custom reward fn decide.
             if not tool_calls:
-                step = AgentFlowStep(
+                final_step = AgentFlowStep(
                     prompt_ids=prompt_ids,
                     response_ids=response_ids,
                     response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                     reward_score=None,
                     extra_fields={
                         "reward_extra_info": {
-                            "dense_reward_sum": dense_reward_sum,
                             "success": final_success_flag,
                             "num_steps": num_steps,
+                            "dense_reward_sum": dense_reward_sum,
+                            "task_id": task_id,
+                            "split": split,
+                            "task_type_raw": task_type_raw,
+                            "task_family": task_family,
                         },
                     },
                 )
-                step = await self._postprocess(step, **kwargs)
-                self.steps.append(step)
+                final_step = await self._postprocess(final_step, **kwargs)
+                self.steps.append(final_step)
                 break
 
-            # Only support one env_step per round (ignore parallel semantics).
             tool_call = tool_calls[0]
             env_reward = 0.0
 
@@ -147,15 +135,12 @@ class AlfworldAgentFlow(AgentFlowBase):
                     done = bool(result["done"])
                     info = result.get("info", {}) or {}
                     self.history_actions = result.get("history_actions", self.history_actions)
-                    # Track success flag if env reports it.
                     if "success" in info:
                         final_success_flag = bool(info["success"])
+                    elif "won" in info:
+                        final_success_flag = bool(info["won"])
                     dense_reward_sum += env_reward
-                else:
-                    # Empty/invalid command: keep obs, give small negative shaping if you like.
-                    env_reward = 0.0
 
-            # Tool step: default to no shaping reward (set to 0.0).
             step = AgentFlowStep(
                 prompt_ids=prompt_ids,
                 response_ids=response_ids,
@@ -167,6 +152,10 @@ class AlfworldAgentFlow(AgentFlowBase):
                         "dense_reward_sum": dense_reward_sum,
                         "success": final_success_flag,
                         "num_steps": num_steps,
+                        "task_id": task_id,
+                        "split": split,
+                        "task_type_raw": task_type_raw,
+                        "task_family": task_family,
                     },
                 },
             )
@@ -174,8 +163,6 @@ class AlfworldAgentFlow(AgentFlowBase):
             self.steps.append(step)
 
             if done:
-                # Episode terminated by env; add a final step with reward_score=None so
-                # rule-based reward_fn can compute success-based outcome reward.
                 final_step = AgentFlowStep(
                     prompt_ids=prompt_ids,
                     response_ids=response_ids,
@@ -183,9 +170,13 @@ class AlfworldAgentFlow(AgentFlowBase):
                     reward_score=None,
                     extra_fields={
                         "reward_extra_info": {
-                            "dense_reward_sum": dense_reward_sum,
                             "success": final_success_flag,
                             "num_steps": num_steps,
+                            "dense_reward_sum": dense_reward_sum,
+                            "task_id": task_id,
+                            "split": split,
+                            "task_type_raw": task_type_raw,
+                            "task_family": task_family,
                         },
                     },
                 )
@@ -194,4 +185,3 @@ class AlfworldAgentFlow(AgentFlowBase):
                 break
 
         return AgentFlowOutput(steps=self.steps, metrics=metrics)
-

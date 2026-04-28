@@ -1,72 +1,169 @@
-"""
-Thin wrapper around the ALFWorld text-based environment.
-
-This module assumes you have installed ALFWorld in your environment, e.g.:
-
-    git clone https://github.com/alfworld/alfworld.git
-    pip install -e alfworld
-
-The exact import path may vary depending on ALFWorld version. Adjust
-`_make_alfworld_env` accordingly if needed.
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Tuple
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 
-def _make_alfworld_env(env_name: str):
-    """
-    Factory for ALFWorld environment.
-
-    By default we try to import ALFWorld's gym wrapper. If your version uses a
-    different entry-point, modify this function.
-    """
-    try:
-        import alfworld.agents.environment as alfworld_env  # type: ignore[import]
-    except ImportError as e:  # pragma: no cover - runtime dependency
-        raise ImportError(
-            "ALFWorld is not installed. Please install it from "
-            "https://github.com/alfworld/alfworld and ensure it is on PYTHONPATH."
-        ) from e
-
-    # This is roughly aligned with ALFWorld's official usage:
-    # env = alfworld_env.ALFWorldEnv(env_name=env_name, ...)
-    # For simplicity we pass only env_name; extend as needed.
-    env = alfworld_env.ALFWorldEnv(env_name=env_name)
-    return env
+def _default_data_root() -> str:
+    return os.getenv("ALFWORLD_DATA_ROOT", "data/alfworld")
 
 
 @dataclass
-class AlfworldEnvWrapper:
-    """
-    A minimal wrapper providing reset/step API used by AlfworldToolExecutor.
-    """
+class AlfworldTextworldEnv:
+    data_root: str = field(default_factory=_default_data_root)
+    max_episode_steps: int = 50
+    _env: Any = field(init=False, default=None)
+    _current_game_path: Path | None = field(init=False, default=None)
 
-    env_name: str = "alfworld_train"
+    def _games_root(self) -> Path:
+        return Path(self.data_root).expanduser().resolve() / "games"
 
-    def __post_init__(self):
-        self._env = _make_alfworld_env(self.env_name)
-        self._last_obs: str | None = None
+    def _resolve_game_path(self, game_relative_path: str) -> Path:
+        game_path = self._games_root() / game_relative_path
+        if not game_path.exists():
+            raise FileNotFoundError(
+                f"ALFWorld game file not found: {game_path}. "
+                f"Expected runtime assets under {self._games_root()}."
+            )
+        return game_path
 
-    def reset(self, task_id: str | None = None) -> str:
-        """
-        Reset environment. If task_id is provided and your ALFWorld version
-        supports specifying a task, you can route it here.
-        """
-        if task_id is not None and hasattr(self._env, "reset_task"):
-            obs, info = self._env.reset_task(task_id)  # type: ignore[attr-defined]
-        else:
-            obs, info = self._env.reset()
-        self._last_obs = str(obs)
-        return self._last_obs
+    def _close_env(self) -> None:
+        if self._env is not None and hasattr(self._env, "close"):
+            self._env.close()
+        self._env = None
+        self._current_game_path = None
 
-    def step(self, action_str: str) -> Tuple[str, float, bool, dict]:
-        """
-        Execute a text command in ALFWorld.
-        """
-        obs, reward, done, info = self._env.step(action_str)
-        self._last_obs = str(obs)
-        return self._last_obs, float(reward), bool(done), dict(info or {})
+    def _build_env(self, game_path: Path):
+        try:
+            import textworld
+            import textworld.gym
+        except ImportError as e:
+            raise ImportError(
+                "TextWorld runtime is not installed. Please install ALFWorld/TextWorld dependencies first."
+            ) from e
 
+        wrappers: list[Any] = []
+        try:
+            from alfworld.agents.utils.misc import Demangler
+
+            class AlfredDemangler(textworld.core.Wrapper):
+                def __init__(self, *args, shuffle: bool = False, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self.shuffle = shuffle
+
+                def load(self, *args, **kwargs):
+                    super().load(*args, **kwargs)
+                    demangler = Demangler(game_infos=self._entity_infos, shuffle=self.shuffle)
+                    for info in self._entity_infos.values():
+                        info.name = demangler.demangle_alfred_name(info.id)
+
+            wrappers.append(AlfredDemangler(shuffle=False))
+        except Exception:
+            # Friendly feedback still exists in game.tw-pddl, so demangling is optional.
+            pass
+
+        class AlfredInfos(textworld.core.Wrapper):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._gamefile = None
+
+            def load(self, *args, **kwargs):
+                super().load(*args, **kwargs)
+                self._gamefile = args[0]
+
+            def reset(self, *args, **kwargs):
+                state = super().reset(*args, **kwargs)
+                try:
+                    state["extra.gamefile"] = self._gamefile
+                except Exception:
+                    pass
+                return state
+
+        wrappers.append(AlfredInfos)
+
+        request_infos = textworld.EnvInfos(
+            won=True,
+            admissible_commands=True,
+            extras=["gamefile"],
+        )
+        env_id = textworld.gym.register_games(
+            [str(game_path)],
+            request_infos,
+            batch_size=1,
+            asynchronous=False,
+            max_episode_steps=self.max_episode_steps,
+            wrappers=wrappers,
+        )
+        return textworld.gym.make(env_id)
+
+    def _ensure_env(self, game_path: Path) -> None:
+        if self._env is not None and self._current_game_path == game_path:
+            return
+        self._close_env()
+        self._env = self._build_env(game_path)
+        self._current_game_path = game_path
+
+    @staticmethod
+    def _unwrap_batch_item(value: Any) -> Any:
+        if isinstance(value, (list, tuple)) and len(value) == 1:
+            return value[0]
+        return value
+
+    def _normalize_reset_output(self, reset_output: Any) -> tuple[Any, dict[str, Any]]:
+        if isinstance(reset_output, tuple) and len(reset_output) == 2:
+            obs, info = reset_output
+            return obs, dict(info or {})
+        return reset_output, {}
+
+    def _normalize_step_output(self, step_output: Any) -> tuple[Any, float, bool, dict[str, Any]]:
+        if isinstance(step_output, tuple) and len(step_output) == 5:
+            obs, reward, terminated, truncated, info = step_output
+            return obs, float(reward), bool(terminated or truncated), dict(info or {})
+        if isinstance(step_output, tuple) and len(step_output) == 4:
+            obs, reward, done, info = step_output
+            return obs, float(reward), bool(done), dict(info or {})
+        if isinstance(step_output, tuple) and len(step_output) == 3:
+            obs, reward, done = step_output
+            return obs, float(reward), bool(done), {}
+        raise RuntimeError(f"Unsupported step() output: {type(step_output)} / {step_output!r}")
+
+    @staticmethod
+    def _state_to_observation(state: Any) -> str:
+        state = AlfworldTextworldEnv._unwrap_batch_item(state)
+        if isinstance(state, dict):
+            if "feedback" in state:
+                return str(state["feedback"])
+            if "observation" in state:
+                return str(state["observation"])
+        return str(state)
+
+    @staticmethod
+    def _state_to_info(state: Any, base_info: dict[str, Any]) -> dict[str, Any]:
+        state = AlfworldTextworldEnv._unwrap_batch_item(state)
+        info = dict(base_info or {})
+        if isinstance(state, dict):
+            for key in ("won", "admissible_commands", "extra.gamefile"):
+                if key in state:
+                    info[key] = state[key]
+        info["success"] = bool(info.get("won", False))
+        return info
+
+    def reset(self, game_relative_path: str, task_id: str | None = None) -> str:
+        del task_id  # task_id is carried for logging / debugging; game_relative_path is the runtime selector.
+        game_path = self._resolve_game_path(game_relative_path)
+        self._ensure_env(game_path)
+        raw_state, _ = self._normalize_reset_output(self._env.reset())
+        raw_state = self._unwrap_batch_item(raw_state)
+        return self._state_to_observation(raw_state)
+
+    def step(self, action_str: str) -> tuple[str, float, bool, dict[str, Any]]:
+        if self._env is None:
+            raise RuntimeError("Environment not initialized. Call reset() before step().")
+
+        raw_state, reward, done, base_info = self._normalize_step_output(self._env.step(action_str))
+        raw_state = self._unwrap_batch_item(raw_state)
+        info = self._state_to_info(raw_state, base_info)
+        observation = self._state_to_observation(raw_state)
+        return observation, reward, done, info

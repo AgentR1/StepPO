@@ -1,8 +1,7 @@
 ALFWORLD_SYSTEM_PROMPT = (
-    "You are an agent in a text-based household environment (ALFWorld). "
-    "You interact with the environment ONLY by issuing single-line commands "
-    "such as 'go north', 'open fridge', 'take apple', 'put apple in fridge'. "
-    "Do not explain your reasoning in the command itself."
+    "You are acting in ALFWorld TextWorld. "
+    "Output exactly one executable text command each turn. "
+    "Do not explain. Do not answer in free-form text."
 )
 
 
@@ -12,14 +11,11 @@ ALFWORLD_USER_PROMPT = """### Current Observation
 ### History Actions
 {history_actions}
 
-### Goal
-{goal}
-
 ### Instructions
-- At each step, output exactly ONE command via the `env_step` tool.
-- Commands should be concise and executable in the environment.
-- Try to accomplish the goal in as few steps as possible.
-- Do NOT output free-form text answers; always use the tool.
+- Use exactly one command through the `env_step` tool.
+- Follow ALFWorld TextWorld command style such as `go to dresser 1`, `take mug 1 from cabinet 3`, `use desklamp 1`.
+- Use the official observation text as the source of truth.
+- Do not output explanations or a final natural-language answer.
 """
 
 
@@ -28,16 +24,17 @@ EXEC_ACTION_TOOL_SCHEMA = {
     "function": {
         "name": "env_step",
         "description": (
-            "Execute a single text command in the ALFWorld environment. "
-            "The command should be a valid action like 'go north', "
-            "'open fridge', 'take apple', etc."
+            "Execute one ALFWorld TextWorld command and return the next official observation."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "A single text command to execute in the environment.",
+                    "description": (
+                        "A single ALFWorld TextWorld command such as "
+                        "`go to dresser 1`, `open cabinet 3`, `take mug 1 from cabinet 3`, `use desklamp 1`."
+                    ),
                 }
             },
             "required": ["command"],
@@ -47,4 +44,3 @@ EXEC_ACTION_TOOL_SCHEMA = {
 
 
 ALFWORLD_TOOL_SCHEMAS = [EXEC_ACTION_TOOL_SCHEMA]
-

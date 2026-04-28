@@ -5,42 +5,50 @@ from typing import Any
 from verl.utils.reward_score import default_compute_score
 
 
+def _maybe_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    return bool(value)
+
+
 def compute_score(
     data_source: str,
     solution_str: str,
     ground_truth: Any,
     extra_info: dict | None = None,
     **kwargs,
-) -> float:
-    """
-    Custom reward for ALFWorld.
-
-    - If data_source != "alfworld": fall back to default_compute_score so other
-      datasets are unaffected.
-    - If data_source == "alfworld":
-        * We only care about final success/fail.
-        * ground_truth is expected to be a bool or {"success": bool}, or we can
-          read success flag from extra_info.
-    """
-    if data_source != "alfworld":
+) -> float | dict[str, Any]:
+    if not str(data_source).startswith("alfworld"):
         return default_compute_score(data_source, solution_str, ground_truth, extra_info, **kwargs)
 
-    success_flag: bool | None = None
+    extra_info = extra_info or {}
+    runtime_info = extra_info.get("reward_extra_info", {}) if isinstance(extra_info, dict) else {}
+    if not isinstance(runtime_info, dict):
+        runtime_info = {}
 
-    # Prefer explicit ground_truth if provided
-    if isinstance(ground_truth, dict) and "success" in ground_truth:
-        success_flag = bool(ground_truth["success"])
-    elif isinstance(ground_truth, bool):
-        success_flag = ground_truth
-
-    # Fallback to extra_info if available
-    if success_flag is None and extra_info is not None:
-        if isinstance(extra_info, dict) and "success" in extra_info:
-            success_flag = bool(extra_info["success"])
+    success_flag = None
+    if isinstance(ground_truth, dict):
+        success_flag = _maybe_bool(ground_truth.get("success"))
+    else:
+        success_flag = _maybe_bool(ground_truth)
 
     if success_flag is None:
-        # Unknown success state -> neutral reward
-        return 0.0
+        success_flag = _maybe_bool(runtime_info.get("success"))
+    if success_flag is None:
+        success_flag = _maybe_bool(extra_info.get("success")) if isinstance(extra_info, dict) else None
 
-    return 1.0 if success_flag else 0.0
+    score = 1.0 if success_flag else 0.0
 
+    result = {
+        "score": score,
+        "success": bool(success_flag),
+        "split": runtime_info.get("split", extra_info.get("split")),
+        "task_id": runtime_info.get("task_id", extra_info.get("task_id")),
+        "task_type_raw": runtime_info.get("task_type_raw", extra_info.get("task_type_raw")),
+        "task_family": runtime_info.get("task_family", extra_info.get("task_family")),
+        "num_steps": runtime_info.get("num_steps"),
+        "dense_reward_sum": runtime_info.get("dense_reward_sum"),
+    }
+    return result

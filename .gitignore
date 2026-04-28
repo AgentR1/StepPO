@@ -10,3 +10,6 @@ Agent-R1-lagacy/
 __pycache__/
 *.pyc
 /recipe/paper_search/selector-qwen3-8b
+alfworld_data/
+data/alfworld/
+alfworld.zip

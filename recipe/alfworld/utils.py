@@ -1,29 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
-from recipe.alfworld.env.alfworld_wrapper import AlfworldEnvWrapper
+from recipe.alfworld.env.alfworld_wrapper import AlfworldTextworldEnv
 
 
 @dataclass
 class AlfworldToolExecutor:
-    """
-    Simple executor that bridges tool calls from AgentFlow to ALFWorld env.
-    """
+    max_episode_steps: int = 50
+    _env: AlfworldTextworldEnv = field(init=False)
+    _history_actions: list[str] = field(default_factory=list)
 
-    env_name: str = "alfworld_train"
-    _env: AlfworldEnvWrapper = field(init=False)
-    _history_actions: List[str] = field(default_factory=list)
+    def __post_init__(self) -> None:
+        self._env = AlfworldTextworldEnv(max_episode_steps=self.max_episode_steps)
 
-    def __post_init__(self):
-        self._env = AlfworldEnvWrapper(env_name=self.env_name)
-
-    def reset(self, task_id: str | None = None) -> str:
+    def reset(self, game_relative_path: str, task_id: str | None = None) -> str:
         self._history_actions.clear()
-        return self._env.reset(task_id=task_id)
+        return self._env.reset(game_relative_path=game_relative_path, task_id=task_id)
 
-    def step(self, command: str) -> Dict[str, Any]:
+    def step(self, command: str) -> dict[str, Any]:
         self._history_actions.append(command)
         observation, reward, done, info = self._env.step(command)
         return {
@@ -35,8 +31,7 @@ class AlfworldToolExecutor:
         }
 
 
-def format_history_actions(actions: List[str]) -> str:
+def format_history_actions(actions: list[str]) -> str:
     if not actions:
         return "None"
-    return "\n".join(f"[Action {i + 1}] {a}" for i, a in enumerate(actions))
-
+    return "\n".join(f"[Action {i + 1}] {action}" for i, action in enumerate(actions))
