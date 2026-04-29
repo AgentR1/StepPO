@@ -1,0 +1,6 @@
+- name: webshop_agent
+  _target_: recipe.webshop.webshop_agent_flow.WebShopAgentFlow
+  max_steps: 15
+  max_parallel_calls: 1
+  env_timeout: 30.0
+
