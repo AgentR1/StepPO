@@ -60,6 +60,23 @@ from verl.utils.metric import reduce_metrics
 from verl.utils.rollout_skip import RolloutSkip
 
 
+def _to_jsonable(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+        return [_to_jsonable(v) for v in value] if isinstance(value, list) else _to_jsonable(value)
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return _to_jsonable(value.item())
+        return _to_jsonable(value.detach().cpu().tolist())
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    return value
+
+
 def get_valid_data(data: DataProto) -> tuple[DataProto, torch.Tensor]:
     """Extract valid (non-padded) data from a DataProto object.
 
@@ -259,7 +276,7 @@ class RayAgentTrainer(RayPPOTrainer):
 
         lines = []
         for i in range(n):
-            entry = {k: v[i] for k, v in base_data.items()}
+            entry = {k: _to_jsonable(v[i]) for k, v in base_data.items()}
             lines.append(json.dumps(entry, ensure_ascii=False))
 
         with open(filename, "w") as f:
