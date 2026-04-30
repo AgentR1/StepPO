@@ -120,12 +120,21 @@ class AlfworldTextworldEnv:
     def _normalize_step_output(self, step_output: Any) -> tuple[Any, float, bool, dict[str, Any]]:
         if isinstance(step_output, tuple) and len(step_output) == 5:
             obs, reward, terminated, truncated, info = step_output
+            reward = self._unwrap_batch_item(reward)
+            terminated = self._unwrap_batch_item(terminated)
+            truncated = self._unwrap_batch_item(truncated)
+            info = self._unwrap_batch_item(info)
             return obs, float(reward), bool(terminated or truncated), dict(info or {})
         if isinstance(step_output, tuple) and len(step_output) == 4:
             obs, reward, done, info = step_output
+            reward = self._unwrap_batch_item(reward)
+            done = self._unwrap_batch_item(done)
+            info = self._unwrap_batch_item(info)
             return obs, float(reward), bool(done), dict(info or {})
         if isinstance(step_output, tuple) and len(step_output) == 3:
             obs, reward, done = step_output
+            reward = self._unwrap_batch_item(reward)
+            done = self._unwrap_batch_item(done)
             return obs, float(reward), bool(done), {}
         raise RuntimeError(f"Unsupported step() output: {type(step_output)} / {step_output!r}")
 
@@ -162,7 +171,7 @@ class AlfworldTextworldEnv:
         if self._env is None:
             raise RuntimeError("Environment not initialized. Call reset() before step().")
 
-        raw_state, reward, done, base_info = self._normalize_step_output(self._env.step(action_str))
+        raw_state, reward, done, base_info = self._normalize_step_output(self._env.step([action_str]))
         raw_state = self._unwrap_batch_item(raw_state)
         info = self._state_to_info(raw_state, base_info)
         observation = self._state_to_observation(raw_state)
