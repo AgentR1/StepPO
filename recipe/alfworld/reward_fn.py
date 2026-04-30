@@ -5,9 +5,50 @@ from typing import Any
 from verl.utils.reward_score import default_compute_score
 
 
+def _native_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _native_str(value: Any) -> str | None:
+    value = _native_value(value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _native_int(value: Any) -> int | None:
+    value = _native_value(value)
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _native_float(value: Any) -> float | None:
+    value = _native_value(value)
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _maybe_bool(value: Any) -> bool | None:
     if value is None:
         return None
+    value = _native_value(value)
     if isinstance(value, bool):
         return value
     return bool(value)
@@ -42,13 +83,14 @@ def compute_score(
     score = 1.0 if success_flag else 0.0
 
     result = {
-        "score": score,
+        "score": float(score),
+        "step_env_reward": _native_float(runtime_info.get("step_env_reward")) or 0.0,
+        "dense_reward_sum": _native_float(runtime_info.get("dense_reward_sum")),
         "success": bool(success_flag),
-        "split": runtime_info.get("split", extra_info.get("split")),
-        "task_id": runtime_info.get("task_id", extra_info.get("task_id")),
-        "task_type_raw": runtime_info.get("task_type_raw", extra_info.get("task_type_raw")),
-        "task_family": runtime_info.get("task_family", extra_info.get("task_family")),
-        "num_steps": runtime_info.get("num_steps"),
-        "dense_reward_sum": runtime_info.get("dense_reward_sum"),
+        "num_steps": _native_int(runtime_info.get("num_steps")),
+        "task_id": _native_str(runtime_info.get("task_id", extra_info.get("task_id"))),
+        "split": _native_str(runtime_info.get("split", extra_info.get("split"))),
+        "task_type_raw": _native_str(runtime_info.get("task_type_raw", extra_info.get("task_type_raw"))),
+        "task_family": _native_str(runtime_info.get("task_family", extra_info.get("task_family"))),
     }
     return result

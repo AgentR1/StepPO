@@ -69,6 +69,19 @@ class AlfworldAgentFlow(AgentFlowBase):
         final_success_flag: bool | None = None
         dense_reward_sum = 0.0
 
+        def build_reward_extra_info(step_env_reward: float = 0.0) -> dict[str, Any]:
+            return {
+                "score": 0.0,
+                "step_env_reward": float(step_env_reward),
+                "dense_reward_sum": float(dense_reward_sum),
+                "success": bool(final_success_flag),
+                "num_steps": int(num_steps),
+                "task_id": str(task_id or ""),
+                "split": str(split or ""),
+                "task_type_raw": str(task_type_raw or ""),
+                "task_family": str(task_family or ""),
+            }
+
         while num_steps < self.max_steps and not done:
             num_steps += 1
 
@@ -101,17 +114,7 @@ class AlfworldAgentFlow(AgentFlowBase):
                     response_ids=response_ids,
                     response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                     reward_score=None,
-                    extra_fields={
-                        "reward_extra_info": {
-                            "success": final_success_flag,
-                            "num_steps": num_steps,
-                            "dense_reward_sum": dense_reward_sum,
-                            "task_id": task_id,
-                            "split": split,
-                            "task_type_raw": task_type_raw,
-                            "task_family": task_family,
-                        },
-                    },
+                    extra_fields={"reward_extra_info": build_reward_extra_info()},
                 )
                 final_step = await self._postprocess(final_step, **kwargs)
                 self.steps.append(final_step)
@@ -146,18 +149,7 @@ class AlfworldAgentFlow(AgentFlowBase):
                 response_ids=response_ids,
                 response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                 reward_score=0.0,
-                extra_fields={
-                    "reward_extra_info": {
-                        "step_env_reward": env_reward,
-                        "dense_reward_sum": dense_reward_sum,
-                        "success": final_success_flag,
-                        "num_steps": num_steps,
-                        "task_id": task_id,
-                        "split": split,
-                        "task_type_raw": task_type_raw,
-                        "task_family": task_family,
-                    },
-                },
+                extra_fields={"reward_extra_info": build_reward_extra_info(env_reward)},
             )
             step = await self._postprocess(step, **kwargs)
             self.steps.append(step)
@@ -168,17 +160,7 @@ class AlfworldAgentFlow(AgentFlowBase):
                     response_ids=response_ids,
                     response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                     reward_score=None,
-                    extra_fields={
-                        "reward_extra_info": {
-                            "success": final_success_flag,
-                            "num_steps": num_steps,
-                            "dense_reward_sum": dense_reward_sum,
-                            "task_id": task_id,
-                            "split": split,
-                            "task_type_raw": task_type_raw,
-                            "task_family": task_family,
-                        },
-                    },
+                    extra_fields={"reward_extra_info": build_reward_extra_info()},
                 )
                 final_step = await self._postprocess(final_step, **kwargs)
                 self.steps.append(final_step)
