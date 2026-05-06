@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -10,14 +11,44 @@ from transformers import AutoProcessor, AutoTokenizer
 
 from arft.agent_flow.agent_flow import AgentFlowBase, AgentFlowOutput, AgentFlowStep, register
 from arft.reward_loop import ARFTRewardLoopWorker as RewardLoopWorker
-from recipe.webshop.prompts import WEBSHOP_SYSTEM_PROMPT, WEBSHOP_TOOL_SCHEMAS, WEBSHOP_USER_PROMPT
-from recipe.webshop.utils import WebShopEnvClient, format_history_actions
+from recipe.webshop.prompts import WEBSHOP_TOOL_SCHEMAS
+from recipe.webshop.utils import WebShopEnvClient, build_invalid_tool_call_observation, build_webshop_messages
 from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager, DictConfigWrap
-from verl.experimental.agent_loop.tool_parser import ToolParser
+from verl.experimental.agent_loop.tool_parser import FunctionCall, ToolParser
 from verl.utils.profiler import simple_timer
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+_TOOL_CALL_BLOCK = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+
+
+def _recover_tool_calls_from_text(text: str) -> list[FunctionCall]:
+    recovered: list[FunctionCall] = []
+    for raw in _TOOL_CALL_BLOCK.findall(text):
+        try:
+            payload = json.loads(raw.strip())
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        name = payload.get("name")
+        arguments = payload.get("arguments")
+        if not isinstance(name, str):
+            continue
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except Exception:
+                continue
+        if not isinstance(arguments, dict):
+            continue
+        recovered.append(FunctionCall(name=name, arguments=json.dumps(arguments, ensure_ascii=False)))
+    return recovered
+
+
+def _metadata_str(value: Any) -> str:
+    return "" if value is None else str(value)
 
 
 @register("webshop_agent")
@@ -54,6 +85,7 @@ class WebShopAgentFlow(AgentFlowBase):
         reset_payload = await self.client.reset(goal_index)
         current_observation = str(reset_payload["observation"])
         env_state = reset_payload["env_state"]
+        available_actions = (reset_payload.get("info") or {}).get("available_actions") or []
         history_actions: list[str] = []
         self.steps = []
 
@@ -65,17 +97,12 @@ class WebShopAgentFlow(AgentFlowBase):
 
         while num_steps < self.max_steps and not done:
             num_steps += 1
-            messages = [
-                {"role": "system", "content": WEBSHOP_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": WEBSHOP_USER_PROMPT.format(
-                        instruction=instruction,
-                        observation=current_observation,
-                        history_actions=format_history_actions(history_actions),
-                    ),
-                },
-            ]
+            messages = build_webshop_messages(
+                instruction=instruction,
+                observation=current_observation,
+                history_actions=history_actions,
+                available_actions=available_actions,
+            )
             prompt_ids = await self.apply_chat_template(messages, tools=self.tool_schemas)
 
             with simple_timer("generate_sequences", metrics):
@@ -87,36 +114,26 @@ class WebShopAgentFlow(AgentFlowBase):
 
             response_ids = output.token_ids[: self.response_length]
             _, tool_calls = await self.tool_parser.extract_tool_calls(response_ids)
-
             if not tool_calls:
-                step = AgentFlowStep(
-                    prompt_ids=prompt_ids,
-                    response_ids=response_ids,
-                    response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
-                    reward_score=None,
-                    extra_fields={
-                        "reward_extra_info": {
-                            "final_reward": final_reward,
-                            "success": bool(final_info.get("success", False)),
-                            "num_steps": num_steps,
-                            "goal_index": goal_index,
-                            "split": split,
-                            "asin": asin,
-                            "selected_asin": final_info.get("selected_asin"),
-                        }
-                    },
-                )
-                step = await self._postprocess(step, **kwargs)
-                self.steps.append(step)
-                break
+                response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+                tool_calls = _recover_tool_calls_from_text(response_text)
 
             command = ""
-            tool_call = tool_calls[0]
-            if tool_call.name == "env_step":
-                try:
-                    command = str(json.loads(tool_call.arguments).get("command", "")).strip()
-                except Exception as exc:
-                    logger.warning("Failed to parse env_step arguments: %r", exc)
+            invalid_reason: str | None = None
+            if not tool_calls:
+                invalid_reason = "missing env_step tool call"
+            else:
+                tool_call = tool_calls[0]
+                if tool_call.name != "env_step":
+                    invalid_reason = f"expected env_step tool, got {tool_call.name!r}"
+                else:
+                    try:
+                        command = str(json.loads(tool_call.arguments).get("command", "")).strip()
+                    except Exception as exc:
+                        logger.warning("Failed to parse env_step arguments: %r", exc)
+                        invalid_reason = f"failed to parse env_step arguments: {exc}"
+                    if not command and invalid_reason is None:
+                        invalid_reason = "missing command argument"
 
             env_reward = 0.0
             step_info: dict[str, Any] = {}
@@ -128,6 +145,7 @@ class WebShopAgentFlow(AgentFlowBase):
                     env_reward = float(result["reward"])
                     done = bool(result["done"])
                     step_info = result.get("info") or {}
+                    available_actions = step_info.get("available_actions", available_actions)
                     history_actions.append(command)
                     if done:
                         final_reward = env_reward
@@ -135,6 +153,11 @@ class WebShopAgentFlow(AgentFlowBase):
                 except Exception as exc:
                     logger.warning("WebShop env step failed: %r", exc)
                     step_info = {"error": str(exc)}
+            else:
+                reason = invalid_reason or "missing command argument"
+                current_observation = build_invalid_tool_call_observation(current_observation, reason)
+                history_actions.append(f"INVALID_TOOL_CALL: {reason}")
+                step_info = {"error": reason, "available_actions": available_actions}
 
             reward_extra_info = {
                 "step_env_reward": env_reward,
@@ -142,9 +165,9 @@ class WebShopAgentFlow(AgentFlowBase):
                 "success": bool(step_info.get("success", final_info.get("success", False))),
                 "num_steps": num_steps,
                 "goal_index": goal_index,
-                "split": split,
-                "asin": asin,
-                "selected_asin": step_info.get("selected_asin", final_info.get("selected_asin")),
+                "split": _metadata_str(split),
+                "asin": _metadata_str(asin),
+                "selected_asin": _metadata_str(step_info.get("selected_asin", final_info.get("selected_asin"))),
             }
             step = AgentFlowStep(
                 prompt_ids=prompt_ids,
@@ -160,4 +183,3 @@ class WebShopAgentFlow(AgentFlowBase):
                 break
 
         return AgentFlowOutput(steps=self.steps, metrics=metrics)
-

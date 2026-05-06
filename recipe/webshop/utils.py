@@ -6,11 +6,50 @@ from typing import Any
 
 import httpx
 
+from recipe.webshop.prompts import WEBSHOP_SYSTEM_PROMPT, WEBSHOP_USER_PROMPT
+
 
 def format_history_actions(actions: list[str]) -> str:
     if not actions:
         return "None"
     return "\n".join(f"[Action {i + 1}] {action}" for i, action in enumerate(actions))
+
+
+def format_available_actions(actions: list[str] | None) -> str:
+    if not isinstance(actions, list) or not actions:
+        return "None"
+    return "\n".join(f"- {action}" for action in actions)
+
+
+def build_webshop_messages(
+    *,
+    instruction: str,
+    observation: str,
+    history_actions: list[str],
+    available_actions: list[str] | None,
+) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": WEBSHOP_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": WEBSHOP_USER_PROMPT.format(
+                instruction=instruction,
+                observation=observation,
+                history_actions=format_history_actions(history_actions),
+                available_actions=format_available_actions(available_actions),
+            ),
+        },
+    ]
+
+
+def build_invalid_tool_call_observation(previous_observation: str, reason: str) -> str:
+    return (
+        "Invalid tool call. You must call the `env_step` tool exactly once with JSON arguments "
+        'like {"command": "search[wireless headphones]"} or {"command": "click[Buy Now]"}. '
+        f"Reason: {reason}\n\n"
+        "The environment state did not change. Current Observation:\n"
+        f"{previous_observation}"
+    )
 
 
 @dataclass
@@ -37,4 +76,3 @@ class WebShopEnvClient:
 
     async def close(self) -> None:
         await self.client.aclose()
-

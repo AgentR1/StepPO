@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HOST="${WEBSHOP_ENV_HOST:-127.0.0.1}"
-PORT="${WEBSHOP_ENV_PORT:-4100}"
+PORT="${WEBSHOP_ENV_PORT:-4111}"
 WORKERS="${WEBSHOP_ENV_WORKERS:-8}"
 
 export WEBSHOP_DATA_DIR="${WEBSHOP_DATA_DIR:-$(pwd)/webshop_data}"

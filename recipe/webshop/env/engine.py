@@ -172,6 +172,7 @@ class WebShopEngine:
             "goal_index": goal_index,
             "asin": goal.get("asin"),
             "instruction": goal.get("instruction"),
+            "available_actions": self.available_actions(goal, state),
         }
         return render_home(goal), state, info
 
@@ -184,7 +185,11 @@ class WebShopEngine:
                 env_state=state,
                 reward=0.0,
                 done=False,
-                info={"error": "invalid_action_format", "expected": "search[...] or click[...]"},
+                info={
+                    "error": "invalid_action_format",
+                    "expected": "search[...] or click[...]",
+                    "available_actions": self.available_actions(goal, state),
+                },
             )
 
         action_name, value = parsed
@@ -198,12 +203,19 @@ class WebShopEngine:
             new_state.asin = None
             new_state.subpage = None
             observation = self._render_current(goal, new_state)
-            return StepResponse(observation=observation, env_state=new_state, reward=0.0, done=False, info={})
+            return StepResponse(
+                observation=observation,
+                env_state=new_state,
+                reward=0.0,
+                done=False,
+                info={"available_actions": self.available_actions(goal, new_state)},
+            )
 
         if value == "buy now":
             new_state.page_type = "done"
             reward, reward_info = compute_reward(self.index, goal, new_state)
             reward_info.update({"final_reward": reward, "goal_index": goal_index})
+            reward_info["available_actions"] = self.available_actions(goal, new_state)
             return StepResponse(
                 observation="Episode complete.",
                 env_state=new_state,
@@ -216,14 +228,26 @@ class WebShopEngine:
             new_state.page_type = "search_results" if new_state.query else "home"
             new_state.subpage = None
             observation = self._render_current(goal, new_state)
-            return StepResponse(observation=observation, env_state=new_state, reward=0.0, done=False, info={})
+            return StepResponse(
+                observation=observation,
+                env_state=new_state,
+                reward=0.0,
+                done=False,
+                info={"available_actions": self.available_actions(goal, new_state)},
+            )
 
         if value == "back to item":
             if new_state.asin:
                 new_state.page_type = "item"
                 new_state.subpage = None
             observation = self._render_current(goal, new_state)
-            return StepResponse(observation=observation, env_state=new_state, reward=0.0, done=False, info={})
+            return StepResponse(
+                observation=observation,
+                env_state=new_state,
+                reward=0.0,
+                done=False,
+                info={"available_actions": self.available_actions(goal, new_state)},
+            )
 
         asin = value.upper()
         if asin in self.index.asin_to_product:
@@ -232,13 +256,25 @@ class WebShopEngine:
             new_state.subpage = None
             new_state.selected_options = {}
             observation = self._render_current(goal, new_state)
-            return StepResponse(observation=observation, env_state=new_state, reward=0.0, done=False, info={})
+            return StepResponse(
+                observation=observation,
+                env_state=new_state,
+                reward=0.0,
+                done=False,
+                info={"available_actions": self.available_actions(goal, new_state)},
+            )
 
         if value in {"description", "features", "reviews"} and new_state.asin:
             new_state.page_type = "subpage"
             new_state.subpage = value
             observation = self._render_current(goal, new_state)
-            return StepResponse(observation=observation, env_state=new_state, reward=0.0, done=False, info={})
+            return StepResponse(
+                observation=observation,
+                env_state=new_state,
+                reward=0.0,
+                done=False,
+                info={"available_actions": self.available_actions(goal, new_state)},
+            )
 
         if new_state.asin:
             item = self.index.asin_to_product[new_state.asin]
@@ -248,15 +284,57 @@ class WebShopEngine:
                 new_state.page_type = "item"
                 new_state.subpage = None
                 observation = self._render_current(goal, new_state)
-                return StepResponse(observation=observation, env_state=new_state, reward=0.0, done=False, info={})
+                return StepResponse(
+                    observation=observation,
+                    env_state=new_state,
+                    reward=0.0,
+                    done=False,
+                    info={"available_actions": self.available_actions(goal, new_state)},
+                )
 
         return StepResponse(
             observation=self._render_current(goal, state),
             env_state=state,
             reward=0.0,
             done=False,
-            info={"error": "click_target_not_available", "target": value},
+            info={
+                "error": "click_target_not_available",
+                "target": value,
+                "available_actions": self.available_actions(goal, state),
+            },
         )
+
+    def available_actions(self, goal: dict[str, Any], state: EnvState) -> list[str]:
+        if state.page_type == "done":
+            return []
+
+        actions = ["search[<your query>]"]
+
+        if state.page_type == "search_results":
+            for result in self.index.search(state.query, top_k=self.search_top_k):
+                asin = str(result["item"].get("asin") or "").strip()
+                if asin:
+                    actions.append(f"click[{asin}]")
+            return actions
+
+        if state.page_type == "item" and state.asin in self.index.asin_to_product:
+            item = self.index.asin_to_product[state.asin]
+            for target in ("Description", "Features", "Reviews"):
+                actions.append(f"click[{target}]")
+            for choices in normalize_options(item.get("customization_options")).values():
+                for choice in choices:
+                    actions.append(f"click[{choice['value']}]")
+            actions.append("click[Back to Search]")
+            actions.append("click[Buy Now]")
+            return actions
+
+        if state.page_type == "subpage" and state.asin in self.index.asin_to_product:
+            actions.append("click[Back to Item]")
+            actions.append("click[Back to Search]")
+            actions.append("click[Buy Now]")
+            return actions
+
+        return actions
 
     def _render_current(self, goal: dict[str, Any], state: EnvState) -> str:
         if state.page_type == "home":
@@ -269,4 +347,3 @@ class WebShopEngine:
         if state.page_type == "subpage" and state.asin in self.index.asin_to_product:
             return render_subpage(goal, self.index.asin_to_product[state.asin], state.subpage or "")
         return render_home(goal)
-

@@ -5,6 +5,19 @@ from typing import Any
 from verl.utils.reward_score import default_compute_score
 
 
+def _metadata_str(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _metadata_int(value: Any) -> int:
+    if value is None:
+        return -1
+    try:
+        return int(value)
+    except Exception:
+        return -1
+
+
 def compute_score(
     data_source: str,
     solution_str: str,
@@ -26,10 +39,9 @@ def compute_score(
         "acc": score,
         "success": bool(runtime_info.get("success", score >= 0.999)),
         "final_reward": score,
-        "split": runtime_info.get("split", extra_info.get("split")),
-        "goal_index": runtime_info.get("goal_index", extra_info.get("goal_index")),
-        "asin": runtime_info.get("asin", extra_info.get("asin")),
-        "selected_asin": runtime_info.get("selected_asin"),
-        "num_steps": runtime_info.get("num_steps"),
+        "split": _metadata_str(runtime_info.get("split", extra_info.get("split"))),
+        "goal_index": _metadata_int(runtime_info.get("goal_index", extra_info.get("goal_index"))),
+        "asin": _metadata_str(runtime_info.get("asin", extra_info.get("asin"))),
+        "selected_asin": _metadata_str(runtime_info.get("selected_asin")),
+        "num_steps": _metadata_int(runtime_info.get("num_steps")),
     }
-

@@ -15,11 +15,13 @@ WEBSHOP_USER_PROMPT = """### Shopping Instruction
 ### History Actions
 {history_actions}
 
+### Available Actions
+{available_actions}
+
 ### Instructions
 - Use exactly one action through the `env_step` tool.
-- Valid actions are `search[keywords]` and `click[target]`.
-- Search with concise product keywords.
-- Click product ASINs, option values, `Description`, `Features`, `Reviews`, `Back to Search`, `Back to Item`, or `Buy Now`.
+- The `command` must be one available action exactly, except replace `<your query>` in `search[<your query>]` with concise product keywords.
+- Click product ASINs, option values, `Description`, `Features`, `Reviews`, `Back to Search`, `Back to Item`, or `Buy Now` only when listed above.
 - Buy only when the selected product and options satisfy the shopping instruction.
 """
 
@@ -44,4 +46,3 @@ EXEC_ACTION_TOOL_SCHEMA = {
 
 
 WEBSHOP_TOOL_SCHEMAS = [EXEC_ACTION_TOOL_SCHEMA]
-
