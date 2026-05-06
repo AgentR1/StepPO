@@ -88,6 +88,7 @@ def compute_score(
         "dense_reward_sum": _native_float(runtime_info.get("dense_reward_sum")),
         "success": bool(success_flag),
         "num_steps": _native_int(runtime_info.get("num_steps")),
+        "is_action_valid": bool(_maybe_bool(runtime_info.get("is_action_valid"))),
         "task_id": _native_str(runtime_info.get("task_id", extra_info.get("task_id"))),
         "split": _native_str(runtime_info.get("split", extra_info.get("split"))),
         "task_type_raw": _native_str(runtime_info.get("task_type_raw", extra_info.get("task_type_raw"))),

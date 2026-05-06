@@ -176,13 +176,17 @@ class AlfworldTextworldEnv:
         info["success"] = AlfworldTextworldEnv._won_to_success(info.get("won", 0.0))
         return info
 
-    def reset(self, game_relative_path: str, task_id: str | None = None) -> str:
+    def reset_with_info(self, game_relative_path: str, task_id: str | None = None) -> tuple[str, dict[str, Any]]:
         del task_id  # task_id is carried for logging / debugging; game_relative_path is the runtime selector.
         game_path = self._resolve_game_path(game_relative_path)
         self._ensure_env(game_path)
-        raw_state, _ = self._normalize_reset_output(self._env.reset())
+        raw_state, base_info = self._normalize_reset_output(self._env.reset())
         raw_state = self._unwrap_batch_item(raw_state)
-        return self._state_to_observation(raw_state)
+        return self._state_to_observation(raw_state), self._state_to_info(raw_state, base_info)
+
+    def reset(self, game_relative_path: str, task_id: str | None = None) -> str:
+        observation, _ = self.reset_with_info(game_relative_path=game_relative_path, task_id=task_id)
+        return observation
 
     def step(self, action_str: str) -> tuple[str, float, bool, dict[str, Any]]:
         if self._env is None:

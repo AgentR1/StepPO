@@ -10,8 +10,14 @@ from transformers import AutoProcessor, AutoTokenizer
 
 from arft.agent_flow.agent_flow import AgentFlowBase, AgentFlowOutput, AgentFlowStep, register
 from arft.reward_loop import ARFTRewardLoopWorker as RewardLoopWorker
-from recipe.alfworld.prompts import ALFWORLD_SYSTEM_PROMPT, ALFWORLD_TOOL_SCHEMAS, ALFWORLD_USER_PROMPT
-from recipe.alfworld.utils import AlfworldToolExecutor, format_history_actions
+from recipe.alfworld.prompts import ALFWORLD_TOOL_SCHEMAS
+from recipe.alfworld.utils import (
+    INVALID_TOOL_CALL_ACTION,
+    AlfworldToolExecutor,
+    build_alfworld_messages,
+    build_invalid_tool_call_observation,
+    extract_task_text,
+)
 from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager, DictConfigWrap
 from verl.experimental.agent_loop.tool_parser import ToolParser
 from verl.utils.profiler import simple_timer
@@ -46,6 +52,7 @@ class AlfworldAgentFlow(AgentFlowBase):
 
         self.executor = AlfworldToolExecutor(max_episode_steps=self.max_episode_steps)
         self.current_observation: str = ""
+        self.current_admissible_commands: list[str] = []
         self.history_actions: list[str] = []
         self.steps: list[AgentFlowStep] = []
 
@@ -59,7 +66,13 @@ class AlfworldAgentFlow(AgentFlowBase):
         if not game_relative_path:
             raise ValueError("ALFWorld sample is missing extra_info.game_relative_path")
 
-        self.current_observation = self.executor.reset(game_relative_path=game_relative_path, task_id=task_id)
+        self.current_observation, reset_info = self.executor.reset_with_info(
+            game_relative_path=game_relative_path,
+            task_id=task_id,
+        )
+        admissible_commands = reset_info.get("admissible_commands")
+        self.current_admissible_commands = admissible_commands if isinstance(admissible_commands, list) else []
+        task_text = extract_task_text(self.current_observation, extra_info.get("goal_text"))
         self.history_actions = []
         self.steps = []
 
@@ -80,21 +93,18 @@ class AlfworldAgentFlow(AgentFlowBase):
                 "split": str(split or ""),
                 "task_type_raw": str(task_type_raw or ""),
                 "task_family": str(task_family or ""),
+                "is_action_valid": False,
             }
 
         while num_steps < self.max_steps and not done:
             num_steps += 1
 
-            messages = [
-                {"role": "system", "content": ALFWORLD_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": ALFWORLD_USER_PROMPT.format(
-                        observation=self.current_observation,
-                        history_actions=format_history_actions(self.history_actions),
-                    ),
-                },
-            ]
+            messages = build_alfworld_messages(
+                task_text=task_text,
+                observation=self.current_observation,
+                history_actions=self.history_actions,
+                admissible_commands=self.current_admissible_commands,
+            )
 
             prompt_ids = await self.apply_chat_template(messages, tools=self.tool_schemas)
 
@@ -108,48 +118,62 @@ class AlfworldAgentFlow(AgentFlowBase):
             response_ids = output.token_ids[: self.response_length]
             _, tool_calls = await self.tool_parser.extract_tool_calls(response_ids)
 
-            if not tool_calls:
-                final_step = AgentFlowStep(
-                    prompt_ids=prompt_ids,
-                    response_ids=response_ids,
-                    response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
-                    reward_score=None,
-                    extra_fields={"reward_extra_info": build_reward_extra_info()},
-                )
-                final_step = await self._postprocess(final_step, **kwargs)
-                self.steps.append(final_step)
-                break
-
-            tool_call = tool_calls[0]
             env_reward = 0.0
+            is_action_valid = False
+            invalid_reason: str | None = None
 
-            if tool_call.name == "env_step":
-                try:
-                    tool_args = json.loads(tool_call.arguments)
-                    command = str(tool_args.get("command", "")).strip()
-                except Exception as e:
-                    logger.warning("Failed to parse env_step arguments: %s", e)
+            if not tool_calls:
+                invalid_reason = "missing env_step tool call"
+            else:
+                tool_call = tool_calls[0]
+                if tool_call.name != "env_step":
+                    invalid_reason = f"expected env_step tool, got {tool_call.name!r}"
+                else:
                     command = ""
+                    try:
+                        tool_args = json.loads(tool_call.arguments)
+                        command = str(tool_args.get("command", "")).strip()
+                    except Exception as e:
+                        logger.warning("Failed to parse env_step arguments: %s", e)
+                        invalid_reason = f"failed to parse env_step arguments: {e}"
 
-                if command:
-                    result = self.executor.step(command)
-                    self.current_observation = result["observation"]
-                    env_reward = float(result["reward"])
-                    done = bool(result["done"])
-                    info = result.get("info", {}) or {}
-                    self.history_actions = result.get("history_actions", self.history_actions)
-                    if "success" in info:
-                        final_success_flag = bool(info["success"])
-                    elif "won" in info:
-                        final_success_flag = bool(info["won"])
-                    dense_reward_sum += env_reward
+                    if not command and invalid_reason is None:
+                        invalid_reason = "missing command argument"
+
+                    if command:
+                        is_action_valid = command in self.current_admissible_commands
+                        result = self.executor.step(command)
+                        self.current_observation = result["observation"]
+                        env_reward = float(result["reward"])
+                        done = bool(result["done"])
+                        info = result.get("info", {}) or {}
+                        admissible_commands = info.get("admissible_commands")
+                        self.current_admissible_commands = admissible_commands if isinstance(admissible_commands, list) else []
+                        self.history_actions = result.get("history_actions", self.history_actions)
+                        if "success" in info:
+                            final_success_flag = bool(info["success"])
+                        elif "won" in info:
+                            final_success_flag = bool(info["won"])
+                        dense_reward_sum += env_reward
+
+            if invalid_reason is not None:
+                self.current_observation = build_invalid_tool_call_observation(
+                    self.current_observation,
+                    invalid_reason,
+                )
+                self.history_actions.append(f"{INVALID_TOOL_CALL_ACTION}: {invalid_reason}")
 
             step = AgentFlowStep(
                 prompt_ids=prompt_ids,
                 response_ids=response_ids,
                 response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                 reward_score=0.0,
-                extra_fields={"reward_extra_info": build_reward_extra_info(env_reward)},
+                extra_fields={
+                    "reward_extra_info": {
+                        **build_reward_extra_info(env_reward),
+                        "is_action_valid": bool(is_action_valid),
+                    }
+                },
             )
             step = await self._postprocess(step, **kwargs)
             self.steps.append(step)
