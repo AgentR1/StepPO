@@ -375,7 +375,8 @@ def main() -> None:
     parser.add_argument("--device_map", default="auto")
     parser.add_argument("--parser_mode", default="strict", choices=["strict", "permissive"])
     parser.add_argument("--trust_remote_code", action="store_true", default=True)
-    parser.add_argument("--enable_thinking", action="store_true")
+    parser.add_argument("--enable_thinking", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--disable_thinking", action="store_true")
     parser.add_argument("--save_prompts", action="store_true")
     parser.add_argument("--print_steps", action="store_true", help="Print raw responses/actions/observations to terminal.")
     parser.add_argument("--print_observation_chars", type=int, default=500)
@@ -390,7 +391,7 @@ def main() -> None:
         dtype=args.dtype,
         device_map=args.device_map,
         trust_remote_code=args.trust_remote_code,
-        disable_thinking=not args.enable_thinking,
+        disable_thinking=args.disable_thinking and not args.enable_thinking,
     )
 
     all_results: list[dict[str, Any]] = []
@@ -443,6 +444,7 @@ def main() -> None:
         "parser_mode": args.parser_mode,
         "sample_mode": args.sample_mode,
         "seed": args.seed,
+        "disable_thinking": args.disable_thinking and not args.enable_thinking,
         "max_steps": args.max_steps,
         "max_samples": args.max_samples,
         "splits": split_summaries,

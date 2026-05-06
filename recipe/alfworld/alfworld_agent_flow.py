@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -19,11 +20,42 @@ from recipe.alfworld.utils import (
     extract_task_text,
 )
 from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager, DictConfigWrap
-from verl.experimental.agent_loop.tool_parser import ToolParser
+from verl.experimental.agent_loop.tool_parser import FunctionCall, ToolParser
 from verl.utils.profiler import simple_timer
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+_TOOL_CALL_BLOCK = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+
+
+def _recover_tool_calls_from_text(text: str) -> list[FunctionCall]:
+    recovered: list[FunctionCall] = []
+    for raw in _TOOL_CALL_BLOCK.findall(text):
+        try:
+            payload = json.loads(raw.strip())
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        name = payload.get("name")
+        arguments = payload.get("arguments")
+        if not isinstance(name, str):
+            continue
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except Exception:
+                continue
+        if not isinstance(arguments, dict):
+            continue
+        recovered.append(
+            FunctionCall(
+                name=name,
+                arguments=json.dumps(arguments, ensure_ascii=False),
+            )
+        )
+    return recovered
 
 
 @register("alfworld_agent")
@@ -117,6 +149,9 @@ class AlfworldAgentFlow(AgentFlowBase):
 
             response_ids = output.token_ids[: self.response_length]
             _, tool_calls = await self.tool_parser.extract_tool_calls(response_ids)
+            if not tool_calls:
+                response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+                tool_calls = _recover_tool_calls_from_text(response_text)
 
             env_reward = 0.0
             is_action_valid = False
