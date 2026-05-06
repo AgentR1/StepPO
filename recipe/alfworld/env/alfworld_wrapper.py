@@ -111,6 +111,23 @@ class AlfworldTextworldEnv:
             return value[0]
         return value
 
+    @staticmethod
+    def _batch_info_to_single(info: dict[str, Any] | None) -> dict[str, Any]:
+        return {
+            key: AlfworldTextworldEnv._unwrap_batch_item(value)
+            for key, value in dict(info or {}).items()
+        }
+
+    @staticmethod
+    def _won_to_success(value: Any) -> bool:
+        value = AlfworldTextworldEnv._unwrap_batch_item(value)
+        if hasattr(value, "item"):
+            try:
+                value = value.item()
+            except Exception:
+                pass
+        return bool(float(value))
+
     def _normalize_reset_output(self, reset_output: Any) -> tuple[Any, dict[str, Any]]:
         if isinstance(reset_output, tuple) and len(reset_output) == 2:
             obs, info = reset_output
@@ -151,12 +168,12 @@ class AlfworldTextworldEnv:
     @staticmethod
     def _state_to_info(state: Any, base_info: dict[str, Any]) -> dict[str, Any]:
         state = AlfworldTextworldEnv._unwrap_batch_item(state)
-        info = dict(base_info or {})
+        info = AlfworldTextworldEnv._batch_info_to_single(base_info)
         if isinstance(state, dict):
             for key in ("won", "admissible_commands", "extra.gamefile"):
                 if key in state:
-                    info[key] = state[key]
-        info["success"] = bool(info.get("won", False))
+                    info[key] = AlfworldTextworldEnv._unwrap_batch_item(state[key])
+        info["success"] = AlfworldTextworldEnv._won_to_success(info.get("won", 0.0))
         return info
 
     def reset(self, game_relative_path: str, task_id: str | None = None) -> str:
