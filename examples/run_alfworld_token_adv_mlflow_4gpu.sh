@@ -92,8 +92,8 @@ python3 -m arft.main_agent_ppo \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.val_before_train=True \
-    trainer.save_freq=100 \
-    trainer.test_freq=20 \
+    trainer.save_freq=50 \
+    trainer.test_freq=10 \
     trainer.max_actor_ckpt_to_keep=3 \
     trainer.max_critic_ckpt_to_keep=3 \
     trainer.total_epochs=20 "$@"

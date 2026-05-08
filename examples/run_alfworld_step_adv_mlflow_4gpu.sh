@@ -22,7 +22,7 @@ export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://127.0.0.1:5000}"
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/recipe/alfworld/base.yaml"
 
-ALFWORLD_MODEL_PATH="${ALFWORLD_MODEL_PATH:-Qwen/Qwen2.5-3B-Instruct}"
+ALFWORLD_MODEL_PATH="${ALFWORLD_MODEL_PATH:-Qwen/Qwen3-4B-Instruct-2507}"
 ALFWORLD_MAX_PROMPT_LEN="${ALFWORLD_MAX_PROMPT_LEN:-4096}"
 ALFWORLD_MAX_RESPONSE_LEN="${ALFWORLD_MAX_RESPONSE_LEN:-1024}"
 ALFWORLD_TRAIN_PATH="${ALFWORLD_TRAIN_PATH:-$PROJECT_DIR/data/alfworld/train.parquet}"
@@ -92,8 +92,8 @@ python3 -m arft.main_agent_ppo \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.val_before_train=True \
-    trainer.save_freq=100 \
-    trainer.test_freq=20 \
+    trainer.save_freq=50 \
+    trainer.test_freq=10 \
     trainer.max_actor_ckpt_to_keep=3 \
     trainer.max_critic_ckpt_to_keep=3 \
     trainer.total_epochs=20 "$@"
