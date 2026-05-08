@@ -13,7 +13,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Logging to $LOG_FILE"
 set -x
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"
 export ALFWORLD_DATA_ROOT="${ALFWORLD_DATA_ROOT:-$PROJECT_DIR/data/alfworld}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
