@@ -34,11 +34,13 @@ def compute_score(
         runtime_info = {}
 
     score = float(runtime_info.get("final_reward") or runtime_info.get("step_env_reward") or 0.0)
+    task_score = float(runtime_info.get("task_score") or score)
     return {
         "score": score,
         "acc": score,
         "success": bool(runtime_info.get("success", score >= 0.999)),
         "final_reward": score,
+        "task_score": task_score,
         "split": _metadata_str(runtime_info.get("split", extra_info.get("split"))),
         "goal_index": _metadata_int(runtime_info.get("goal_index", extra_info.get("goal_index"))),
         "asin": _metadata_str(runtime_info.get("asin", extra_info.get("asin"))),

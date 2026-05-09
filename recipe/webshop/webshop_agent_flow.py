@@ -92,6 +92,7 @@ class WebShopAgentFlow(AgentFlowBase):
         metrics: dict[str, Any] = {}
         done = False
         final_reward = 0.0
+        final_task_score = 0.0
         final_info: dict[str, Any] = {}
         num_steps = 0
 
@@ -149,6 +150,7 @@ class WebShopAgentFlow(AgentFlowBase):
                     history_actions.append(command)
                     if done:
                         final_reward = env_reward
+                        final_task_score = float(step_info.get("task_score", env_reward))
                         final_info = step_info
                 except Exception as exc:
                     logger.warning("WebShop env step failed: %r", exc)
@@ -162,6 +164,7 @@ class WebShopAgentFlow(AgentFlowBase):
             reward_extra_info = {
                 "step_env_reward": env_reward,
                 "final_reward": final_reward if done else 0.0,
+                "task_score": final_task_score if done else float(step_info.get("task_score", 0.0) or 0.0),
                 "success": bool(step_info.get("success", final_info.get("success", False))),
                 "num_steps": num_steps,
                 "goal_index": goal_index,

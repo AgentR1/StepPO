@@ -193,6 +193,16 @@ class ProductIndex:
             results.append({"item": item, "score": float(scores[idx])})
         return results
 
+    def get_product(self, asin: str) -> dict[str, Any] | None:
+        return self.asin_to_product.get(str(asin or ""))
+
+    def has_product(self, asin: str) -> bool:
+        return str(asin or "") in self.asin_to_product
+
+    @property
+    def num_products(self) -> int:
+        return len(self.products)
+
     def goal(self, goal_index: int) -> dict[str, Any]:
         if goal_index < 0 or goal_index >= len(self.goals):
             raise IndexError(f"goal_index out of range: {goal_index} (num_goals={len(self.goals)})")
