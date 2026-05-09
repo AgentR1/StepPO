@@ -24,7 +24,7 @@ export PAPERSEARCH_SELECTOR_BASE_URL=${PAPERSEARCH_SELECTOR_BASE_URL:-http://loc
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/recipe/paper_search/base.yaml"
 
-PAPERSEARCH_MODEL_PATH="/root/.cache/huggingface/qwen/Qwen3-4B-Instruct-2507"
+PAPERSEARCH_MODEL_PATH="Qwen/Qwen3-4B-Instruct-2507"
 PAPERSEARCH_MAX_PROMPT_LEN=${PAPERSEARCH_MAX_PROMPT_LEN:-10240}
 PAPERSEARCH_MAX_RESPONSE_LEN=${PAPERSEARCH_MAX_RESPONSE_LEN:-4096}
 PAPERSEARCH_TRAIN_PATH="/root/workspace/StepPO/data/pasa/train.parquet"
@@ -56,6 +56,7 @@ python3 -m arft.main_agent_ppo \
     actor_rollout_ref.actor.clip_ratio_high=4e-4 \
     actor_rollout_ref.actor.clip_ratio_c=10.0 \
     actor_rollout_ref.actor.policy_loss.loss_mode=gspo \
+    actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-mean \
     actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
