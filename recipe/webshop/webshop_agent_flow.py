@@ -72,6 +72,8 @@ class WebShopAgentFlow(AgentFlowBase):
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.tool_schemas = WEBSHOP_TOOL_SCHEMAS
         self.client = WebShopEnvClient(timeout=float(kwargs.get("env_timeout", 30.0)))
+        self.invalid_tool_call_penalty = float(kwargs.get("invalid_tool_call_penalty", 0.1))
+        self.success_reward = float(kwargs.get("success_reward", 10.0))
         self.steps: list[AgentFlowStep] = []
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentFlowOutput:
@@ -86,7 +88,7 @@ class WebShopAgentFlow(AgentFlowBase):
         current_observation = str(reset_payload["observation"])
         env_state = reset_payload["env_state"]
         available_actions = (reset_payload.get("info") or {}).get("available_actions") or []
-        history_actions: list[str] = []
+        recent_history: list[dict[str, str]] = []
         self.steps = []
 
         metrics: dict[str, Any] = {}
@@ -98,10 +100,11 @@ class WebShopAgentFlow(AgentFlowBase):
 
         while num_steps < self.max_steps and not done:
             num_steps += 1
+            observation_before_action = current_observation
             messages = build_webshop_messages(
                 instruction=instruction,
                 observation=current_observation,
-                history_actions=history_actions,
+                recent_history=recent_history,
                 available_actions=available_actions,
             )
             prompt_ids = await self.apply_chat_template(messages, tools=self.tool_schemas)
@@ -123,6 +126,8 @@ class WebShopAgentFlow(AgentFlowBase):
             invalid_reason: str | None = None
             if not tool_calls:
                 invalid_reason = "missing env_step tool call"
+            elif len(tool_calls) > 1:
+                invalid_reason = f"expected exactly one env_step tool call, got {len(tool_calls)}"
             else:
                 tool_call = tool_calls[0]
                 if tool_call.name != "env_step":
@@ -137,6 +142,9 @@ class WebShopAgentFlow(AgentFlowBase):
                         invalid_reason = "missing command argument"
 
             env_reward = 0.0
+            step_reward = 0.0
+            invalid_tool_call = False
+            success = False
             step_info: dict[str, Any] = {}
             if command:
                 try:
@@ -146,10 +154,12 @@ class WebShopAgentFlow(AgentFlowBase):
                     env_reward = float(result["reward"])
                     done = bool(result["done"])
                     step_info = result.get("info") or {}
+                    success = bool(step_info.get("success", env_reward >= 0.999))
+                    step_reward = self.success_reward if done and success else 0.0
                     available_actions = step_info.get("available_actions", available_actions)
-                    history_actions.append(command)
+                    recent_history.append({"observation": observation_before_action, "action": command})
                     if done:
-                        final_reward = env_reward
+                        final_reward = step_reward
                         final_task_score = float(step_info.get("task_score", env_reward))
                         final_info = step_info
                 except Exception as exc:
@@ -158,14 +168,20 @@ class WebShopAgentFlow(AgentFlowBase):
             else:
                 reason = invalid_reason or "missing command argument"
                 current_observation = build_invalid_tool_call_observation(current_observation, reason)
-                history_actions.append(f"INVALID_TOOL_CALL: {reason}")
+                invalid_tool_call = True
+                step_reward = -self.invalid_tool_call_penalty
+                recent_history.append({"observation": observation_before_action, "action": f"INVALID_TOOL_CALL: {reason}"})
                 step_info = {"error": reason, "available_actions": available_actions}
 
             reward_extra_info = {
                 "step_env_reward": env_reward,
+                "step_reward": step_reward,
                 "final_reward": final_reward if done else 0.0,
                 "task_score": final_task_score if done else float(step_info.get("task_score", 0.0) or 0.0),
-                "success": bool(step_info.get("success", final_info.get("success", False))),
+                "success": success or bool(final_info.get("success", False)),
+                "success_reward": self.success_reward if success else 0.0,
+                "invalid_tool_call": invalid_tool_call,
+                "invalid_tool_call_penalty": self.invalid_tool_call_penalty if invalid_tool_call else 0.0,
                 "num_steps": num_steps,
                 "goal_index": goal_index,
                 "split": _metadata_str(split),
@@ -176,7 +192,7 @@ class WebShopAgentFlow(AgentFlowBase):
                 prompt_ids=prompt_ids,
                 response_ids=response_ids,
                 response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
-                reward_score=env_reward if done else 0.0,
+                reward_score=step_reward,
                 extra_fields={"reward_extra_info": reward_extra_info},
             )
             step = await self._postprocess(step, **kwargs)

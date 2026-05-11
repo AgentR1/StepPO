@@ -3,4 +3,5 @@
   max_steps: 15
   max_parallel_calls: 1
   env_timeout: 30.0
-
+  invalid_tool_call_penalty: 0.1
+  success_reward: 10.0

@@ -12,8 +12,8 @@ WEBSHOP_USER_PROMPT = """### Shopping Instruction
 ### Current Observation
 {observation}
 
-### History Actions
-{history_actions}
+### Recent History
+{recent_history}
 
 ### Available Actions
 {available_actions}

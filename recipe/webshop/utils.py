@@ -9,10 +9,23 @@ import httpx
 from recipe.webshop.prompts import WEBSHOP_SYSTEM_PROMPT, WEBSHOP_USER_PROMPT
 
 
-def format_history_actions(actions: list[str]) -> str:
-    if not actions:
+def _short(text: str, limit: int = 1800) -> str:
+    text = str(text or "").strip()
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def format_recent_history(history: list[dict[str, str]], *, limit: int = 2) -> str:
+    if not history:
         return "None"
-    return "\n".join(f"[Action {i + 1}] {action}" for i, action in enumerate(actions))
+    recent = history[-limit:]
+    start = len(history) - len(recent) + 1
+    lines = []
+    for offset, record in enumerate(recent):
+        step_num = start + offset
+        observation = _short(record.get("observation", ""))
+        action = str(record.get("action", "")).strip()
+        lines.append(f"[Observation {step_num}]\n{observation}\n[Action {step_num}]\n{action}")
+    return "\n\n".join(lines)
 
 
 def format_available_actions(actions: list[str] | None) -> str:
@@ -25,7 +38,7 @@ def build_webshop_messages(
     *,
     instruction: str,
     observation: str,
-    history_actions: list[str],
+    recent_history: list[dict[str, str]],
     available_actions: list[str] | None,
 ) -> list[dict[str, str]]:
     return [
@@ -35,7 +48,7 @@ def build_webshop_messages(
             "content": WEBSHOP_USER_PROMPT.format(
                 instruction=instruction,
                 observation=observation,
-                history_actions=format_history_actions(history_actions),
+                recent_history=format_recent_history(recent_history),
                 available_actions=format_available_actions(available_actions),
             ),
         },

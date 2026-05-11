@@ -33,13 +33,20 @@ def compute_score(
     if not isinstance(runtime_info, dict):
         runtime_info = {}
 
-    score = float(runtime_info.get("final_reward") or runtime_info.get("step_env_reward") or 0.0)
+    if "step_reward" in runtime_info:
+        score = float(runtime_info["step_reward"])
+    elif "final_reward" in runtime_info:
+        score = float(runtime_info["final_reward"])
+    else:
+        score = float(runtime_info.get("step_env_reward", 0.0))
     task_score = float(runtime_info.get("task_score") or score)
+    success = bool(runtime_info.get("success", score > 0.0))
+    final_reward = float(runtime_info.get("final_reward", score))
     return {
         "score": score,
-        "acc": score,
-        "success": bool(runtime_info.get("success", score >= 0.999)),
-        "final_reward": score,
+        "acc": 1.0 if success else 0.0,
+        "success": success,
+        "final_reward": final_reward,
         "task_score": task_score,
         "split": _metadata_str(runtime_info.get("split", extra_info.get("split"))),
         "goal_index": _metadata_int(runtime_info.get("goal_index", extra_info.get("goal_index"))),
