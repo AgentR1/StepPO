@@ -245,22 +245,6 @@ class PaperSearchV2Agent:
     def _clean_user_prompt(user_prompt: str) -> str:
         return re.sub(r"[\u200b\u200c\u200d\uFEFF\u00A0]", " ", user_prompt)
 
-    def _tool_schemas_prompt_block(self) -> str:
-        """Return tool schemas as text so the model sees names/args without OpenAI ``tools=`` on the wire.
-
-        vLLM (and some gateways) validate structured tool outputs when ``tools`` is set; free-form
-        ``<analysis>`` + Hermes ``<tool_call>`` then triggers 400 during completion. Training only
-        uses ``apply_chat_template(..., tools=...)`` locally and parses tokens with HermesToolParser,
-        so it never hits that HTTP validation path.
-
-        Returns:
-            A prompt segment listing JSON tool schemas.
-        """
-        return (
-            "### Declared tools (JSON schemas; call only `search` and `expand` with these names)\n"
-            f"{json.dumps(self.tool_schemas, ensure_ascii=False, indent=2)}"
-        )
-
     def _message_content_as_str(self, msg: Any) -> str:
         """Best-effort string from ``message.content`` (OpenAI-compatible)."""
         raw_content = getattr(msg, "content", None)
@@ -311,17 +295,13 @@ class PaperSearchV2Agent:
         user_prompt = self._clean_user_prompt(user_prompt)
 
         use_native_tools = os.getenv("PAPER_AGENT_V2_NATIVE_TOOLS", "").strip().lower() in ("1", "true", "yes")
-        # Training: ``apply_chat_template(..., tools=schemas)`` + local HermesToolParser — no OpenAI ``tools=``
-        # HTTP validation. Inference against vLLM: sending ``tools`` makes the server parse tool output;
-        # ``<analysis>`` + Hermes tags often yields pydantic 400 (``log_extra_fields`` / invalid JSON).
-        # Default: inject schemas into system prompt, omit ``tools`` from the request; keep Hermes parsing.
-        openai_tools_raw = os.getenv("PAPER_AGENT_V2_OPENAI_TOOLS", "1").strip().lower()
-        use_openai_tools_off = openai_tools_raw in ("0", "false", "no")
-        use_openai_tools_api = openai_tools_raw == "api"
-        use_openai_tools_prompt = not use_openai_tools_off and not use_openai_tools_api
-
-        if use_openai_tools_prompt and not use_native_tools:
-            system_prompt = f"{system_prompt}\n\n{self._tool_schemas_prompt_block()}"
+        # Standard OpenAI ``tools`` + tool_choice in the request (same idea as ``apply_chat_template(..., tools=...)``).
+        # We still decode tool calls only from ``message.content`` (Hermes), matching recipe. Note: many
+        # vLLM builds run a server-side tool parser when ``tools`` is set; if it cannot turn the model
+        # output into structured tool calls (e.g. ``<analysis>`` before ``<tool_call>``), the *server*
+        # may return 400 before a normal ChatCompletion — that is independent of the client ignoring
+        # ``message.tool_calls``.
+        use_openai_tools = os.getenv("PAPER_AGENT_V2_OPENAI_TOOLS", "1").strip().lower() not in ("0", "false", "no")
 
         try:
             if use_native_tools:
@@ -334,7 +314,7 @@ class PaperSearchV2Agent:
                     tools=self.tool_schemas,
                     tool_choice="required",
                 )
-            elif use_openai_tools_api:
+            elif use_openai_tools:
                 response = call_openai_chat(
                     model_name=self.model_name,
                     system_prompt=system_prompt,
