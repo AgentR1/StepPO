@@ -245,6 +245,19 @@ class PaperSearchV2Agent:
     def _clean_user_prompt(user_prompt: str) -> str:
         return re.sub(r"[\u200b\u200c\u200d\uFEFF\u00A0]", " ", user_prompt)
 
+    def _message_content_as_str(self, msg: Any) -> str:
+        """Best-effort string from ``message.content`` (OpenAI-compatible)."""
+        raw_content = getattr(msg, "content", None)
+        if isinstance(raw_content, list):
+            texts: list[str] = []
+            for part in raw_content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    texts.append(str(part.get("text", "")))
+            return "\n".join(texts)
+        if isinstance(raw_content, str):
+            return raw_content
+        return ""
+
     def _parse_hermes_style_tool_calls(self, text: str) -> tuple[str, list[Any]]:
         """Decode tool calls from assistant text like ``HermesToolParser.extract_tool_calls`` (no tokenizer)."""
         tool_calls: list[Any] = []
@@ -282,6 +295,9 @@ class PaperSearchV2Agent:
         user_prompt = self._clean_user_prompt(user_prompt)
 
         use_native_tools = os.getenv("PAPER_AGENT_V2_NATIVE_TOOLS", "").strip().lower() in ("1", "true", "yes")
+        # Training uses ``tokenizer.apply_chat_template(..., tools=schemas)`` so the model sees tool names/schemas.
+        # Plain chat without ``tools=`` omits that, which encourages names like ``search_paper`` and broken tags.
+        use_openai_tools = os.getenv("PAPER_AGENT_V2_OPENAI_TOOLS", "1").strip().lower() not in ("0", "false", "no")
 
         try:
             if use_native_tools:
@@ -294,8 +310,17 @@ class PaperSearchV2Agent:
                     tools=self.tool_schemas,
                     tool_choice="required",
                 )
+            elif use_openai_tools:
+                response = call_openai_chat(
+                    model_name=self.model_name,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    api_key=self.api_key,
+                    api_base=self.api_base,
+                    tools=self.tool_schemas,
+                    tool_choice="auto",
+                )
             else:
-                # Align with RL training: plain completion + Hermes <tool_call> blocks (see verl HermesToolParser).
                 response = call_openai_chat(
                     model_name=self.model_name,
                     system_prompt=system_prompt,
@@ -317,22 +342,22 @@ class PaperSearchV2Agent:
                 return msg, msg.tool_calls
             return msg, None
 
-        raw_content = getattr(msg, "content", None)
-        if isinstance(raw_content, list):
-            texts: list[str] = []
-            for part in raw_content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    texts.append(str(part.get("text", "")))
-            text = "\n".join(texts)
-        elif isinstance(raw_content, str):
-            text = raw_content
-        else:
-            text = ""
-
-        thought_text, parsed = self._parse_hermes_style_tool_calls(text)
+        # Non-native: always parse tool calls from assistant text (same regex + JSON shape as
+        # ``verl.experimental.agent_loop.tool_parser.HermesToolParser``), even when the request
+        # included ``tools=`` for chat-template alignment. API ``message.tool_calls`` is ignored.
+        text = self._message_content_as_str(msg)
+        thought_text, hermes_parsed = self._parse_hermes_style_tool_calls(text)
+        if not hermes_parsed:
+            api_tc = getattr(msg, "tool_calls", None) or []
+            if api_tc:
+                self.logger.info(
+                    "Hermes text parse found no <tool_call> blocks; ignoring %d API tool_calls "
+                    "(inference uses recipe-aligned Hermes parsing only).",
+                    len(api_tc),
+                )
         display_content = thought_text if thought_text else text
         faux = SimpleNamespace(content=display_content)
-        return faux, parsed
+        return faux, hermes_parsed
 
     def _ordered_ranked_entries(self):
         return list(reversed(self.paper_pool.ranked_papers))
@@ -723,6 +748,12 @@ class PaperSearchV2Agent:
 
     async def get_relevance_score(self, query: str, paper: Paper, **kwargs) -> float:
         prompt = self.prompts["get_selected"].format(title=paper.title, abstract=paper.abstract, user_query=query)
+        self.logger.info(
+            "[Selector] POST %s model=%s paper_id=%s",
+            self.selector_url,
+            self.selector_model_name,
+            paper.paper_id,
+        )
         payload = {
             "model": self.selector_model_name,
             "input": [prompt],
