@@ -33,6 +33,18 @@ VAL_DUMP_DIR="${ALFWORLD_VAL_DUMP_DIR:-$PROJECT_DIR/outputs/alfworld_validation/
 
 # GRPO: multiple independent rollouts per sampled task for group-relative advantages (verl rollout.n).
 ARFT_GRPO_ROLLOUT_N="${ARFT_GRPO_ROLLOUT_N:-8}"
+# Match token_gae script's 128 unique tasks per step: train_batch_size * rollout.n ~= 128 (fewer prompts, more rollouts).
+ALFWORLD_GRPO_BASE_TRAIN_BATCH="${ALFWORLD_GRPO_BASE_TRAIN_BATCH:-128}"
+ALFWORLD_GRPO_BASE_LOG_PROB_MICRO_BATCH="${ALFWORLD_GRPO_BASE_LOG_PROB_MICRO_BATCH:-32}"
+ALFWORLD_TRAIN_BATCH_SIZE="$((ALFWORLD_GRPO_BASE_TRAIN_BATCH / ARFT_GRPO_ROLLOUT_N))"
+ALFWORLD_LOG_PROB_MICRO_BATCH="$((ALFWORLD_GRPO_BASE_LOG_PROB_MICRO_BATCH / ARFT_GRPO_ROLLOUT_N))"
+if [[ "$ALFWORLD_TRAIN_BATCH_SIZE" -lt 1 ]]; then
+    echo "❌ ALFWORLD_GRPO_BASE_TRAIN_BATCH ($ALFWORLD_GRPO_BASE_TRAIN_BATCH) must be >= ARFT_GRPO_ROLLOUT_N ($ARFT_GRPO_ROLLOUT_N)." >&2
+    exit 1
+fi
+if [[ "$ALFWORLD_LOG_PROB_MICRO_BATCH" -lt 1 ]]; then
+    ALFWORLD_LOG_PROB_MICRO_BATCH=1
+fi
 
 PROJECT_NAME="${PROJECT_NAME:-ALFWorld_ARFT}"
 EXP_NAME="${EXP_NAME:-alfworld_grpo}"
@@ -42,7 +54,7 @@ python3 -m arft.main_agent_ppo \
     algorithm.norm_adv_by_std_in_grpo="${ARFT_NORM_ADV_BY_STD_IN_GRPO:-True}" \
     data.train_files="$ALFWORLD_TRAIN_PATH" \
     data.val_files="[\"$ALFWORLD_VAL_SEEN_PATH\",\"$ALFWORLD_VAL_UNSEEN_PATH\"]" \
-    data.train_batch_size=128 \
+    data.train_batch_size="$ALFWORLD_TRAIN_BATCH_SIZE" \
     data.max_prompt_length="$ALFWORLD_MAX_PROMPT_LEN" \
     data.max_response_length="$ALFWORLD_MAX_RESPONSE_LEN" \
     data.filter_overlong_prompts=True \
@@ -51,7 +63,7 @@ python3 -m arft.main_agent_ppo \
     actor_rollout_ref.model.path="$ALFWORLD_MODEL_PATH" \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=128 \
+    actor_rollout_ref.actor.ppo_mini_batch_size="$ALFWORLD_TRAIN_BATCH_SIZE" \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
@@ -64,13 +76,13 @@ python3 -m arft.main_agent_ppo \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="$ALFWORLD_LOG_PROB_MICRO_BATCH" \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.rollout.n="$ARFT_GRPO_ROLLOUT_N" \
     actor_rollout_ref.rollout.agent.agent_flow_config_path="$CONFIG_PATH" \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="$ALFWORLD_LOG_PROB_MICRO_BATCH" \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.rollout.agent.num_workers=4 \
     actor_rollout_ref.rollout.agent.default_agent_flow=alfworld_agent \
