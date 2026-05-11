@@ -22,6 +22,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
+from vllm.inputs import TokensPrompt
 
 from recipe.paper_search.prompts import (
     PAPERSEARCH_SYSTEM_PROMPT,
@@ -134,7 +135,7 @@ class PaperSearchInferenceAgent:
     def _llm_generate_token_ids(self, prompt_token_ids: list[int]) -> list[int]:
         """Run sync vLLM generation; returns **new** token ids only."""
         outputs = self.llm.generate(
-            prompt_token_ids=[prompt_token_ids],
+            prompts=[TokensPrompt(prompt_token_ids=prompt_token_ids)],
             sampling_params=self._sampling_params,
         )
         out = outputs[0]
