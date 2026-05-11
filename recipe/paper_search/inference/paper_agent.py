@@ -34,7 +34,8 @@ Analyze the **Paper List** and **History Actions** to determine the next set of 
 **You support parallel tool calling.** You should output multiple tool calls in a single step if several independent actions are valuable at the current state.
 **Attend to the history actions and avoid repeating the same search query or expanding the same paper.**
 
-{date_range_instruction}### Output Format
+{date_range_instruction}
+### Output Format
 <analysis>
 [Your analysis of the current state and decision logic...]
 </analysis>
@@ -100,7 +101,8 @@ from utils import (
 )
 
 
-_TOOL_CALL_BLOCK = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+# Same pattern as ``verl.experimental.agent_loop.tool_parser.HermesToolParser.tool_call_regex`` (``regex.DOTALL`` ≡ ``re.DOTALL``).
+_HERMES_TOOL_CALL_REGEX = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
 
 def _optional_year_month_cli(raw: Optional[str]) -> tuple[Optional[str], Optional[tuple[int, int]]]:
@@ -243,27 +245,31 @@ class PaperSearchV2Agent:
     def _clean_user_prompt(user_prompt: str) -> str:
         return re.sub(r"[\u200b\u200c\u200d\uFEFF\u00A0]", " ", user_prompt)
 
-    @staticmethod
-    def _parse_hermes_style_tool_calls(text: str) -> tuple[str, list[Any]]:
-        """Match training-time Hermes parsing: each block is JSON with name and arguments."""
+    def _parse_hermes_style_tool_calls(self, text: str) -> tuple[str, list[Any]]:
+        """Decode tool calls from assistant text like ``HermesToolParser.extract_tool_calls`` (no tokenizer)."""
         tool_calls: list[Any] = []
-        for raw in _TOOL_CALL_BLOCK.findall(text or ""):
-            piece = raw.strip()
-            if not piece:
-                continue
+        if not text:
+            return "", tool_calls
+        if "<tool_call>" not in text or "</tool_call>" not in text:
+            return text, tool_calls
+
+        for match in _HERMES_TOOL_CALL_REGEX.findall(text):
             try:
-                obj = json.loads(piece)
-                name = obj["name"]
-                args = obj.get("arguments", {})
-                if isinstance(args, str):
-                    args_str = args
-                else:
-                    args_str = json.dumps(args, ensure_ascii=False)
-                tool_calls.append(SimpleNamespace(function=SimpleNamespace(name=name, arguments=args_str)))
+                function_call = json.loads(match)
+                name, arguments = function_call["name"], function_call["arguments"]
+                tool_calls.append(
+                    SimpleNamespace(
+                        function=SimpleNamespace(
+                            name=name,
+                            arguments=json.dumps(arguments, ensure_ascii=False),
+                        )
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
-                logging.getLogger(__name__).info("Skip invalid <tool_call> JSON: %s", exc)
-        remainder = _TOOL_CALL_BLOCK.sub("", text or "").strip()
-        return remainder, tool_calls
+                self.logger.info("Failed to decode tool call: %s", exc)
+
+        content = _HERMES_TOOL_CALL_REGEX.sub("", text)
+        return content, tool_calls
 
     def _get_next_turn_message(self, user_query: str):
         system_prompt = PAPERSEARCH_SYSTEM_PROMPT
@@ -317,10 +323,15 @@ class PaperSearchV2Agent:
             for part in raw_content:
                 if isinstance(part, dict) and part.get("type") == "text":
                     texts.append(str(part.get("text", "")))
-            raw_content = "\n".join(texts)
-        content = (raw_content or "").strip()
-        thought_text, parsed = self._parse_hermes_style_tool_calls(content)
-        faux = SimpleNamespace(content=thought_text if thought_text else content)
+            text = "\n".join(texts)
+        elif isinstance(raw_content, str):
+            text = raw_content
+        else:
+            text = ""
+
+        thought_text, parsed = self._parse_hermes_style_tool_calls(text)
+        display_content = thought_text if thought_text else text
+        faux = SimpleNamespace(content=display_content)
         return faux, parsed
 
     def _ordered_ranked_entries(self):
