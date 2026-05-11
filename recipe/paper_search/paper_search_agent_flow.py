@@ -42,6 +42,8 @@ class PaperSearchAgentFlow(AgentFlowBase):
         self.search_top_k = kwargs.get("search_top_k", 10)
         self.citations_limit = kwargs.get("citations_limit", 30)
         self.references_limit = kwargs.get("references_limit", -1)
+        self.search_year = kwargs.get("search_year", os.getenv("PAPER_SEARCH_SEARCH_YEAR", "-2024"))
+        self.max_arxiv_yymm = int(kwargs.get("max_arxiv_yymm", os.getenv("PAPER_SEARCH_MAX_ARXIV_YYMM", "2410")))
 
         self.tool_parser = ToolParser.get_tool_parser(
             self.config.actor_rollout_ref.rollout.multi_turn.format, self.tokenizer
@@ -72,6 +74,15 @@ class PaperSearchAgentFlow(AgentFlowBase):
             else:
                 raise ValueError(f"Invalid action: {action}")
         return "\n".join(lines) if lines else "None"
+
+    def _is_before_arxiv_cutoff(self, paper: Paper) -> bool:
+        arxiv_id = paper.arxiv_id or paper.paper_id
+        prefix = arxiv_id.split("v", 1)[0].split(".", 1)[0]
+        if len(prefix) == 4 and prefix.isdigit():
+            return int(prefix) <= self.max_arxiv_yymm
+        if paper.year is not None and int(paper.year) > 2024:
+            return False
+        return True
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentFlowOutput:
         raw_prompt = list(kwargs["raw_prompt"])
@@ -180,7 +191,7 @@ class PaperSearchAgentFlow(AgentFlowBase):
             return -0.5
 
         try:
-            papers = await self.client.search(query=query, limit=self.search_top_k)
+            papers = await self.client.search(query=query, limit=self.search_top_k, year=self.search_year)
         except Exception as exc:
             logger.warning("Error in search %s: %r", query, exc)
             self.history_search_queries[query] = 0
@@ -192,6 +203,8 @@ class PaperSearchAgentFlow(AgentFlowBase):
 
         for paper in papers:
             if not paper.paper_id or paper.paper_id in seen_paper_ids:
+                continue
+            if not self._is_before_arxiv_cutoff(paper):
                 continue
             seen_paper_ids.add(paper.paper_id)
             with self._paper_pool_lock:
@@ -249,6 +262,8 @@ class PaperSearchAgentFlow(AgentFlowBase):
         seen_paper_ids: set[str] = set()
         for paper in citations + references:
             if not paper.paper_id or paper.paper_id == paper_id or paper.paper_id in seen_paper_ids:
+                continue
+            if not self._is_before_arxiv_cutoff(paper):
                 continue
             if not paper.abstract:
                 continue
