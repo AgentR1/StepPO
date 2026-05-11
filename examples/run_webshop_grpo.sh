@@ -20,6 +20,8 @@ export HYDRA_FULL_ERROR=1
 export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://127.0.0.1:5000}"
 export WEBSHOP_ENV_BASE_URL="${WEBSHOP_ENV_BASE_URL:-http://127.0.0.1:4111}"
 
+ARFT_GRPO_ROLLOUT_N="${ARFT_GRPO_ROLLOUT_N:-8}"
+
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/recipe/webshop/base.yaml"
 
@@ -29,13 +31,14 @@ WEBSHOP_MAX_RESPONSE_LEN="${WEBSHOP_MAX_RESPONSE_LEN:-4096}"
 WEBSHOP_DATA_ROOT="${WEBSHOP_DATA_ROOT:-$PROJECT_DIR/data/webshop_full}"
 WEBSHOP_TRAIN_PATH="${WEBSHOP_TRAIN_PATH:-$WEBSHOP_DATA_ROOT/train.parquet}"
 WEBSHOP_VAL_PATH="${WEBSHOP_VAL_PATH:-$WEBSHOP_DATA_ROOT/test.parquet}"
-VAL_DUMP_DIR="${WEBSHOP_VAL_DUMP_DIR:-$PROJECT_DIR/outputs/webshop_validation/step_adv}"
+VAL_DUMP_DIR="${WEBSHOP_VAL_DUMP_DIR:-$PROJECT_DIR/outputs/webshop_validation/grpo}"
 
 PROJECT_NAME="${PROJECT_NAME:-WebShop_ARFT}"
-EXP_NAME="${EXP_NAME:-webshop_step_adv_mlflow_4gpu}"
+EXP_NAME="${EXP_NAME:-webshop_grpo}"
 
 python3 -m arft.main_agent_ppo \
-    algorithm.adv_estimator=gae \
+    algorithm.adv_estimator=grpo \
+    algorithm.norm_adv_by_std_in_grpo="${ARFT_NORM_ADV_BY_STD_IN_GRPO:-True}" \
     data.train_files="$WEBSHOP_TRAIN_PATH" \
     data.val_files="$WEBSHOP_VAL_PATH" \
     data.train_batch_size=128 \
@@ -55,9 +58,8 @@ python3 -m arft.main_agent_ppo \
     actor_rollout_ref.actor.clip_ratio_low=3e-4 \
     actor_rollout_ref.actor.clip_ratio_high=4e-4 \
     actor_rollout_ref.actor.clip_ratio_c=10.0 \
-    actor_rollout_ref.actor.policy_loss.loss_mode=gspo \
-    actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-mean \
+    actor_rollout_ref.actor.entropy_coeff=0 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
@@ -65,6 +67,7 @@ python3 -m arft.main_agent_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.n="$ARFT_GRPO_ROLLOUT_N" \
     actor_rollout_ref.rollout.agent.agent_flow_config_path="$CONFIG_PATH" \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
@@ -76,13 +79,7 @@ python3 -m arft.main_agent_ppo \
     reward_model.enable=False \
     custom_reward_function.path=recipe/webshop/reward_fn.py \
     custom_reward_function.name=compute_score \
-    critic.model.path="$WEBSHOP_MODEL_PATH" \
-    critic.optim.lr=1e-5 \
-    critic.model.use_remove_padding=True \
-    critic.model.enable_gradient_checkpointing=True \
-    critic.ppo_micro_batch_size_per_gpu=16 \
-    critic.model.fsdp_config.param_offload=True \
-    critic.model.fsdp_config.optimizer_offload=True \
+    critic.enable=False \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger='["console","swanlab","mlflow"]' \
@@ -95,5 +92,4 @@ python3 -m arft.main_agent_ppo \
     trainer.save_freq=100 \
     trainer.test_freq=5 \
     trainer.max_actor_ckpt_to_keep=3 \
-    trainer.max_critic_ckpt_to_keep=3 \
     trainer.total_epochs=10 "$@"

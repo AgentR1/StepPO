@@ -6,6 +6,9 @@ export VLLM_USE_V1=1
 export HYDRA_FULL_ERROR=1
 export MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-http://172.17.0.1:5000}
 
+# GRPO: multiple rollouts per task for group-relative advantages (verl rollout.n).
+ARFT_GRPO_ROLLOUT_N="${ARFT_GRPO_ROLLOUT_N:-8}"
+
 PROJECT_DIR="$(pwd)"
 CONFIG_PATH="$PROJECT_DIR/recipe/hotpotqa/base_faiss_cpu.yaml"
 
@@ -24,10 +27,11 @@ TRAIN_PATH="$PROJECT_DIR/data/corpus/hotpotqa/train.parquet"
 VAL_PATH="$PROJECT_DIR/data/corpus/hotpotqa/validation.parquet"
 
 PROJECT_NAME='HotpotQA_ARFT'
-EXP_NAME='hotpotqa_token_level_0.99_adv_mlflow_4gpu'
+EXP_NAME='hotpotqa_grpo'
 
 python3 -m arft.main_agent_ppo \
-    algorithm.adv_estimator=token_gae \
+    algorithm.adv_estimator=grpo \
+    algorithm.norm_adv_by_std_in_grpo="${ARFT_NORM_ADV_BY_STD_IN_GRPO:-True}" \
     data.train_files="$TRAIN_PATH" \
     data.val_files="$VAL_PATH" \
     data.train_batch_size=256 \
@@ -50,6 +54,7 @@ python3 -m arft.main_agent_ppo \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.n="$ARFT_GRPO_ROLLOUT_N" \
     actor_rollout_ref.rollout.agent.agent_flow_config_path="$CONFIG_PATH" \
     actor_rollout_ref.rollout.agent.num_workers=4 \
     actor_rollout_ref.rollout.agent.default_agent_flow=hotpotqa_agent \
@@ -57,13 +62,7 @@ python3 -m arft.main_agent_ppo \
     actor_rollout_ref.rollout.trace.token2text=True \
     actor_rollout_ref.rollout.trace.max_samples_per_step_per_worker=5 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    critic.model.path="$HOTPOTQA_MODEL_PATH" \
-    critic.optim.lr=1e-5 \
-    critic.model.use_remove_padding=True \
-    critic.model.enable_gradient_checkpointing=True \
-    critic.ppo_micro_batch_size_per_gpu=4 \
-    critic.model.fsdp_config.param_offload=True \
-    critic.model.fsdp_config.optimizer_offload=True \
+    critic.enable=False \
     algorithm.use_kl_in_reward=False \
     algorithm.gamma=0.99 \
     reward_model.enable=False \
@@ -79,5 +78,4 @@ python3 -m arft.main_agent_ppo \
     trainer.save_freq=100 \
     trainer.test_freq=10 \
     trainer.max_actor_ckpt_to_keep=3 \
-    trainer.max_critic_ckpt_to_keep=3 \
     trainer.total_epochs=5 "$@"

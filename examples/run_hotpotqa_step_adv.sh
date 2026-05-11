@@ -12,10 +12,12 @@ CONFIG_PATH="$PROJECT_DIR/recipe/hotpotqa/base_faiss_cpu.yaml"
 
 HOTPOTQA_MODEL_PATH=${HOTPOTQA_MODEL_PATH:-Qwen/Qwen2.5-3B-Instruct}
 
-# 长度预算（与 Agent-R1-legacy `run_ppo_hotpotqa.sh` 对照，语义不同）：
-# - Legacy：多轮 token 拼一条轨迹 → data.max_prompt_length=8192、整段 response=8192、单轮 max_response_length_single_turn=1024。
-# - 本脚本（ARFT AgentFlow）：每步重拼 prompt + 单步一次 generate；user 侧多了「Recent tool / format issues」段落，
-#   故适当加大 prompt；单步 response 对齐 legacy 的 1024，减少 <tool_call> JSON 被 max_tokens 截断。
+# Length budget (vs. Agent-R1-legacy `run_ppo_hotpotqa.sh`; semantics differ):
+# - Legacy: multi-turn tokens concatenated into one trajectory → data.max_prompt_length=8192, full response=8192,
+#   per-turn max_response_length_single_turn=1024.
+# - This script (ARFT AgentFlow): each step rebuilds the prompt + one generate per step; the user block adds a
+#   "Recent tool / format issues" section, so we use a larger prompt budget; per-step response matches legacy 1024
+#   to reduce <tool_call> JSON truncation at max_tokens.
 HOTPOTQA_MAX_PROMPT_LEN=${HOTPOTQA_MAX_PROMPT_LEN:-10240}
 HOTPOTQA_MAX_RESPONSE_LEN=${HOTPOTQA_MAX_RESPONSE_LEN:-1024}
 

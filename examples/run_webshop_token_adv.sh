@@ -26,8 +26,9 @@ CONFIG_PATH="$PROJECT_DIR/recipe/webshop/base.yaml"
 WEBSHOP_MODEL_PATH="Qwen/Qwen3-4B-Instruct-2507"
 WEBSHOP_MAX_PROMPT_LEN="${WEBSHOP_MAX_PROMPT_LEN:-8192}"
 WEBSHOP_MAX_RESPONSE_LEN="${WEBSHOP_MAX_RESPONSE_LEN:-4096}"
-WEBSHOP_TRAIN_PATH="${WEBSHOP_TRAIN_PATH:-$PROJECT_DIR/data/webshop/train.parquet}"
-WEBSHOP_VAL_PATH="${WEBSHOP_VAL_PATH:-$PROJECT_DIR/data/webshop/test.parquet}"
+WEBSHOP_DATA_ROOT="${WEBSHOP_DATA_ROOT:-$PROJECT_DIR/data/webshop_full}"
+WEBSHOP_TRAIN_PATH="${WEBSHOP_TRAIN_PATH:-$WEBSHOP_DATA_ROOT/train.parquet}"
+WEBSHOP_VAL_PATH="${WEBSHOP_VAL_PATH:-$WEBSHOP_DATA_ROOT/test.parquet}"
 VAL_DUMP_DIR="${WEBSHOP_VAL_DUMP_DIR:-$PROJECT_DIR/outputs/webshop_validation/token_adv}"
 
 PROJECT_NAME="${PROJECT_NAME:-WebShop_ARFT}"
@@ -95,4 +96,3 @@ python3 -m arft.main_agent_ppo \
     trainer.max_actor_ckpt_to_keep=3 \
     trainer.max_critic_ckpt_to_keep=3 \
     trainer.total_epochs=10 "$@"
-
