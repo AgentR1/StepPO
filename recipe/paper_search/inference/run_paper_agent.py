@@ -3,7 +3,18 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
+from typing import Iterable, Optional, TypeVar
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+
+    T = TypeVar("T")
+
+    def tqdm(iterable: Iterable[T], **_kwargs: object) -> Iterable[T]:  # type: ignore[no-redef]
+        """Fallback when tqdm is not installed."""
+        return iterable
+
 
 import env_config  # noqa: F401
 from paper_agent import PaperSearchAgent
@@ -75,6 +86,25 @@ async def run_single_query(
         await agent.close()
 
 
+def _count_text_lines(path: str) -> int:
+    """Count newline characters in a text file using a buffered binary read.
+
+    Args:
+        path: UTF-8 text file path (e.g. JSONL).
+
+    Returns:
+        Number of ``\\n`` bytes seen; matches ``enumerate(open text lines)`` for typical JSONL.
+    """
+    count = 0
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            count += chunk.count(b"\n")
+    return count
+
+
 def load_existing_ids(details_dir: str) -> set[int]:
     existing_ids: set[int] = set()
     if not os.path.exists(details_dir):
@@ -130,13 +160,22 @@ if __name__ == "__main__":
     os.makedirs(os.path.join(save_dir, "details"), exist_ok=True)
     os.makedirs(os.path.join(save_dir, "th_logs"), exist_ok=True)
 
-    for _ in range(retry_rounds):
+    line_total = _count_text_lines(test_file_path)
+
+    for retry_idx in range(retry_rounds):
         details_dir = os.path.join(save_dir, "details")
         existing_ids = load_existing_ids(details_dir)
 
         try:
             with open(test_file_path, "r", encoding="utf-8") as f:
-                for idx, line in enumerate(f):
+                bar = tqdm(
+                    enumerate(f),
+                    total=line_total,
+                    desc=f"Paper agent (round {retry_idx + 1}/{retry_rounds})",
+                    unit="line",
+                    dynamic_ncols=True,
+                )
+                for idx, line in bar:
                     if idx in existing_ids:
                         continue
 
@@ -149,6 +188,8 @@ if __name__ == "__main__":
                     if os.path.exists(save_path):
                         continue
 
+                    if hasattr(bar, "set_postfix"):
+                        bar.set_postfix(idx=idx, refresh=False)
                     logger = get_logger(save_dir, idx)
                     thought_log_path = get_thought_log_path(save_dir, idx)
                     asyncio.run(
