@@ -5,25 +5,22 @@ import os
 import re
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import httpx
 from openai import OpenAI
 
 import env_config  # noqa: F401
-from utils import (
-    Paper,
-    PaperPool,
-    PaperSearchV2Client,
-    httpx_request_with_retry,
-    parse_year_month_str,
-    paper_overlaps_year_month_range,
-)
 
+# -----------------------------------------------------------------------------
+# Prompts mirrored from ``recipe/paper_search/prompts.py`` for standalone runs.
+# Inference-only: includes ``{date_range_instruction}`` before ``### Output Format`` (CLI month range).
+# If you change training prompts, update this block to match.
+# -----------------------------------------------------------------------------
+PAPERSEARCH_SYSTEM_PROMPT = "You are a research agent. Your goal is to find papers relevant to the User Query."
 
-PAPERSEARCH_V2_SYSTEM_PROMPT = "You are a research agent. Your goal is to find papers relevant to the User Query."
-
-PAPERSEARCH_V2_USER_PROMPT = """### User Query
+PAPERSEARCH_USER_PROMPT = """### User Query
 {user_query}
 
 ### History Actions
@@ -36,9 +33,8 @@ PAPERSEARCH_V2_USER_PROMPT = """### User Query
 Analyze the **Paper List** and **History Actions** to determine the next set of actions. Enclose your analysis of the state and decision logic within `<analysis>...</analysis>` tags.
 **You support parallel tool calling.** You should output multiple tool calls in a single step if several independent actions are valuable at the current state.
 **Attend to the history actions and avoid repeating the same search query or expanding the same paper.**
-{date_range_instruction}
 
-### Output Format
+{date_range_instruction}### Output Format
 <analysis>
 [Your analysis of the current state and decision logic...]
 </analysis>
@@ -51,17 +47,7 @@ Analyze the **Paper List** and **History Actions** to determine the next set of 
 ...
 """
 
-def _optional_year_month_cli(raw: Optional[str]) -> tuple[Optional[str], Optional[tuple[int, int]]]:
-    if raw is None:
-        return None, None
-    s = str(raw).strip()
-    if not s or s.lower() == "none":
-        return None, None
-    y, m = parse_year_month_str(s)
-    return s, (y, m)
-
-
-PAPERSEARCH_V2_TOOL_SCHEMAS = [
+PAPERSEARCH_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
@@ -102,6 +88,29 @@ PAPERSEARCH_V2_TOOL_SCHEMAS = [
         },
     },
 ]
+
+
+from utils import (
+    Paper,
+    PaperPool,
+    PaperSearchV2Client,
+    httpx_request_with_retry,
+    parse_year_month_str,
+    paper_overlaps_year_month_range,
+)
+
+
+_TOOL_CALL_BLOCK = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+
+
+def _optional_year_month_cli(raw: Optional[str]) -> tuple[Optional[str], Optional[tuple[int, int]]]:
+    if raw is None:
+        return None, None
+    s = str(raw).strip()
+    if not s or s.lower() == "none":
+        return None, None
+    y, m = parse_year_month_str(s)
+    return s, (y, m)
 
 
 def call_openai_chat(
@@ -172,7 +181,7 @@ class PaperSearchV2Agent:
         )
         self.citations_limit = kwargs.get("citations_limit", 30)
         self.references_limit = kwargs.get("references_limit", -1)
-        self.tool_schemas = PAPERSEARCH_V2_TOOL_SCHEMAS
+        self.tool_schemas = PAPERSEARCH_TOOL_SCHEMAS
 
         _ps_api_key = kwargs.get("paper_search_api_key", os.getenv("PAPER_SEARCH_V2_API_KEY"))
         _ps_base = kwargs.get("paper_search_base_url", os.getenv("PAPER_SEARCH_V2_BASE_URL"))
@@ -217,7 +226,7 @@ class PaperSearchV2Agent:
         if self.paper_from_month is None and self.paper_to_month is None:
             return (
                 "**Publication date:** no start/end month filter is applied "
-                "(search API and local filtering use the full range returned by the server)."
+                "(search API and local filtering use the full range returned by the server).\n"
             )
         parts: list[str] = []
         if self.paper_from_month is not None:
@@ -225,15 +234,40 @@ class PaperSearchV2Agent:
         if self.paper_to_month is not None:
             parts.append(f"on or before **{self.paper_to_month}** (inclusive)")
         joined = " and ".join(parts)
-        return f"**Publication date:** retrieved papers should be {joined}, using API month range plus arXiv id / year overlap when refining results."
+        return (
+            f"**Publication date:** retrieved papers should be {joined}, using API month range plus "
+            f"arXiv id / year overlap when refining results.\n"
+        )
 
     @staticmethod
     def _clean_user_prompt(user_prompt: str) -> str:
         return re.sub(r"[\u200b\u200c\u200d\uFEFF\u00A0]", " ", user_prompt)
 
+    @staticmethod
+    def _parse_hermes_style_tool_calls(text: str) -> tuple[str, list[Any]]:
+        """Match training-time Hermes parsing: each block is JSON with name and arguments."""
+        tool_calls: list[Any] = []
+        for raw in _TOOL_CALL_BLOCK.findall(text or ""):
+            piece = raw.strip()
+            if not piece:
+                continue
+            try:
+                obj = json.loads(piece)
+                name = obj["name"]
+                args = obj.get("arguments", {})
+                if isinstance(args, str):
+                    args_str = args
+                else:
+                    args_str = json.dumps(args, ensure_ascii=False)
+                tool_calls.append(SimpleNamespace(function=SimpleNamespace(name=name, arguments=args_str)))
+            except Exception as exc:  # noqa: BLE001
+                logging.getLogger(__name__).info("Skip invalid <tool_call> JSON: %s", exc)
+        remainder = _TOOL_CALL_BLOCK.sub("", text or "").strip()
+        return remainder, tool_calls
+
     def _get_next_turn_message(self, user_query: str):
-        system_prompt = PAPERSEARCH_V2_SYSTEM_PROMPT
-        user_prompt = PAPERSEARCH_V2_USER_PROMPT.format(
+        system_prompt = PAPERSEARCH_SYSTEM_PROMPT
+        user_prompt = PAPERSEARCH_USER_PROMPT.format(
             user_query=user_query,
             paper_list=self.paper_pool.paper_list,
             history_actions=self._format_history_actions(),
@@ -241,36 +275,53 @@ class PaperSearchV2Agent:
         )
         user_prompt = self._clean_user_prompt(user_prompt)
 
-        # print(self.model_name, self.api_key, self.api_base)
-        # exit(0)
+        use_native_tools = os.getenv("PAPER_AGENT_V2_NATIVE_TOOLS", "").strip().lower() in ("1", "true", "yes")
 
         try:
-            response = call_openai_chat(
-                model_name=self.model_name,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                api_key=self.api_key,
-                api_base=self.api_base,
-                tools=self.tool_schemas,
-                tool_choice="required",
-                # extra_body={
-                #     "enable_thinking": True
-                # }
-            )
-
+            if use_native_tools:
+                response = call_openai_chat(
+                    model_name=self.model_name,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    api_key=self.api_key,
+                    api_base=self.api_base,
+                    tools=self.tool_schemas,
+                    tool_choice="required",
+                )
+            else:
+                # Align with RL training: plain completion + Hermes <tool_call> blocks (see verl HermesToolParser).
+                response = call_openai_chat(
+                    model_name=self.model_name,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    api_key=self.api_key,
+                    api_base=self.api_base,
+                    tools=None,
+                    tool_choice=None,
+                )
         except Exception as exc:
             self.logger.info("Failed to get next turn message: %s", exc)
             self.logger.info(user_prompt)
             return None, None
 
-        # print(response)
-        # exit(0)
-
         msg = response.choices[0].message
 
-        if hasattr(msg, "tool_calls") and msg.tool_calls:
-            return msg, msg.tool_calls
-        return msg, None
+        if use_native_tools:
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                return msg, msg.tool_calls
+            return msg, None
+
+        raw_content = getattr(msg, "content", None)
+        if isinstance(raw_content, list):
+            texts: list[str] = []
+            for part in raw_content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    texts.append(str(part.get("text", "")))
+            raw_content = "\n".join(texts)
+        content = (raw_content or "").strip()
+        thought_text, parsed = self._parse_hermes_style_tool_calls(content)
+        faux = SimpleNamespace(content=thought_text if thought_text else content)
+        return faux, parsed
 
     def _ordered_ranked_entries(self):
         return list(reversed(self.paper_pool.ranked_papers))
@@ -471,7 +522,7 @@ class PaperSearchV2Agent:
             if break_flag:
                 self.logger.info("================== User Prompt ==================")
                 self.logger.info(
-                    PAPERSEARCH_V2_USER_PROMPT.format(
+                    PAPERSEARCH_USER_PROMPT.format(
                         user_query=user_query,
                         paper_list=self.paper_pool.paper_list,
                         history_actions=self._format_history_actions(),
