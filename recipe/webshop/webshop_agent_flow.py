@@ -193,7 +193,10 @@ class WebShopAgentFlow(AgentFlowBase):
                 response_ids=response_ids,
                 response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                 reward_score=step_reward,
-                extra_fields={"reward_extra_info": reward_extra_info},
+                extra_fields={
+                    "anchor_obs": observation_before_action,
+                    "reward_extra_info": reward_extra_info,
+                },
             )
             step = await self._postprocess(step, **kwargs)
             self.steps.append(step)

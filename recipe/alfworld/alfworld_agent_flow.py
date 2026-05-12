@@ -130,10 +130,11 @@ class AlfworldAgentFlow(AgentFlowBase):
 
         while num_steps < self.max_steps and not done:
             num_steps += 1
+            observation_before_action = self.current_observation
 
             messages = build_alfworld_messages(
                 task_text=task_text,
-                observation=self.current_observation,
+                observation=observation_before_action,
                 history_actions=self.history_actions,
                 admissible_commands=self.current_admissible_commands,
             )
@@ -204,6 +205,7 @@ class AlfworldAgentFlow(AgentFlowBase):
                 response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                 reward_score=0.0,
                 extra_fields={
+                    "anchor_obs": observation_before_action,
                     "reward_extra_info": {
                         **build_reward_extra_info(env_reward),
                         "is_action_valid": bool(is_action_valid),
@@ -219,7 +221,10 @@ class AlfworldAgentFlow(AgentFlowBase):
                     response_ids=response_ids,
                     response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                     reward_score=None,
-                    extra_fields={"reward_extra_info": build_reward_extra_info()},
+                    extra_fields={
+                        "anchor_obs": observation_before_action,
+                        "reward_extra_info": build_reward_extra_info(),
+                    },
                 )
                 final_step = await self._postprocess(final_step, **kwargs)
                 self.steps.append(final_step)

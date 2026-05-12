@@ -73,6 +73,13 @@ class PaperSearchAgentFlow(AgentFlowBase):
                 raise ValueError(f"Invalid action: {action}")
         return "\n".join(lines) if lines else "None"
 
+    def _make_anchor_obs(self) -> str:
+        return PAPERSEARCH_USER_PROMPT.format(
+            user_query=self.user_query,
+            paper_list=self.paper_pool.paper_list,
+            history_actions=self._format_history_actions(),
+        )
+
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentFlowOutput:
         raw_prompt = list(kwargs["raw_prompt"])
         self.paper_pool = PaperPool()
@@ -89,6 +96,7 @@ class PaperSearchAgentFlow(AgentFlowBase):
 
         while num_steps < self.max_steps:
             num_steps += 1
+            anchor_obs = self._make_anchor_obs()
 
             messages = [
                 {"role": "system", "content": PAPERSEARCH_SYSTEM_PROMPT},
@@ -121,6 +129,7 @@ class PaperSearchAgentFlow(AgentFlowBase):
                     response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                     reward_score=total_reward_score,
                     extra_fields={
+                        "anchor_obs": anchor_obs,
                         "reward_extra_info": {
                             "search_actions_total": total_search_action_count,
                             "expand_actions_total": total_expand_action_count,
@@ -164,6 +173,7 @@ class PaperSearchAgentFlow(AgentFlowBase):
                 response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                 reward_score=step_reward_score,
                 extra_fields={
+                    "anchor_obs": anchor_obs,
                     "reward_extra_info": {
                         "search_actions_total": total_search_action_count,
                         "expand_actions_total": total_expand_action_count,

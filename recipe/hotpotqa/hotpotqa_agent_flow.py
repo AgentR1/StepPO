@@ -248,9 +248,25 @@ class HotpotQAAgentFlow(AgentFlowBase):
         )
         return last_ids[: self.prompt_length]
 
-    def _make_extra_fields(self, history_actions: list[str], acc: float = 0.0) -> dict[str, Any]:
+    def _make_anchor_obs(
+        self,
+        question: str,
+        passages: list[tuple[str, str]],
+        history_actions: list[str],
+        tool_feedback: str,
+    ) -> str:
+        fb = tool_feedback.strip() if tool_feedback.strip() else "None"
+        return HOTPOTQA_USER_PROMPT.format(
+            user_query=question,
+            passage_list=_format_passage_list(passages, max_chars=self.prompt_length * 3),
+            history_actions=_format_history_actions(history_actions),
+            tool_feedback=fb,
+        )
+
+    def _make_extra_fields(self, anchor_obs: str, history_actions: list[str], acc: float = 0.0) -> dict[str, Any]:
         """Build extra_fields with consistent reward_extra_info keys across all steps."""
         return {
+            "anchor_obs": anchor_obs,
             "reward_extra_info": {
                 "num_tool_steps": len(history_actions),
                 "acc": acc,
@@ -278,6 +294,7 @@ class HotpotQAAgentFlow(AgentFlowBase):
             fb_text = "\n".join(tool_feedback_lines[-3:]) if tool_feedback_lines else ""
             if not self.enable_tool_parse_feedback:
                 fb_text = ""
+            anchor_obs = self._make_anchor_obs(question, passages, history_actions, fb_text)
             prompt_ids = await self._prompt_ids_within_budget(
                 question, passages, history_actions, fb_text, num_step=num_steps
             )
@@ -314,7 +331,7 @@ class HotpotQAAgentFlow(AgentFlowBase):
                     response_ids=response_ids,
                     response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                     reward_score=None,
-                    extra_fields=self._make_extra_fields(history_actions),
+                    extra_fields=self._make_extra_fields(anchor_obs, history_actions),
                 )
                 step = await self._postprocess(step, **kwargs)
                 ri = step.extra_fields.get("reward_extra_info", {})
@@ -352,7 +369,7 @@ class HotpotQAAgentFlow(AgentFlowBase):
                 response_ids=response_ids,
                 response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
                 reward_score=0.0,
-                extra_fields=self._make_extra_fields(history_actions),
+                extra_fields=self._make_extra_fields(anchor_obs, history_actions),
             )
             step = await self._postprocess(step, **kwargs)
             steps.append(step)
