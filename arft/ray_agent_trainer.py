@@ -141,6 +141,10 @@ def compute_advantage(
     lam: float = 1.0,
     num_repeat: int = 1,
     norm_adv_by_std_in_grpo: bool = True,
+    gigpo_step_advantage_w: float = 1.0,
+    gigpo_mode: str = "mean_std_norm",
+    gigpo_enable_similarity: bool = False,
+    gigpo_similarity_thresh: float = 0.95,
     config: Optional[AlgoConfig] = None,
 ) -> DataProto:
     # TODO: 重写所有 core_algos 中的 advantage 函数，适配新型的 agent flow 数据结构
@@ -149,7 +153,9 @@ def compute_advantage(
     """Compute advantage estimates for policy optimization.
 
     Uses **only** ``arft.core_algos``: ``gae`` → ``compute_gae_advantage_return``,
-    ``token_gae`` → ``compute_token_gae_advantage_return``, ``grpo`` → ``compute_grpo_outcome_advantage``.
+    ``token_gae`` → ``compute_token_gae_advantage_return``, ``grpo`` → ``compute_grpo_outcome_advantage``,
+    ``reinforce_plus_plus`` → ``compute_reinforce_plus_plus_outcome_advantage``,
+    ``rloo`` → ``compute_rloo_outcome_advantage``, ``gigpo`` → ``compute_gigpo_outcome_advantage``.
     Dispatch is by string key from ``_agent_adv_estimator_key`` (Hydra often passes plain ``str``).
 
     Args:
@@ -215,10 +221,72 @@ def compute_advantage(
         )
         advantages[valid_mask] = valid_advantages
         returns[valid_mask] = valid_returns
+    elif adv_key == "reinforce_plus_plus":
+        from arft.core_algos import compute_reinforce_plus_plus_outcome_advantage
+
+        valid_advantages, valid_returns = compute_reinforce_plus_plus_outcome_advantage(
+            token_level_rewards=valid_data.batch["token_level_rewards"],
+            response_mask=valid_data.batch["response_mask"],
+            gamma=gamma,
+        )
+        advantages[valid_mask] = valid_advantages
+        returns[valid_mask] = valid_returns
+    elif adv_key == "reinforce_plus_plus_baseline":
+        from arft.core_algos import compute_reinforce_plus_plus_baseline_outcome_advantage
+
+        valid_advantages, valid_returns = compute_reinforce_plus_plus_baseline_outcome_advantage(
+            token_level_rewards=valid_data.batch["token_level_rewards"],
+            response_mask=valid_data.batch["response_mask"],
+            index=valid_data.non_tensor_batch["uid"],
+            trajectory_uids=valid_data.non_tensor_batch["trajectory_uids"],
+        )
+        advantages[valid_mask] = valid_advantages
+        returns[valid_mask] = valid_returns
+    elif adv_key == "rloo":
+        from arft.core_algos import compute_rloo_outcome_advantage
+
+        valid_advantages, valid_returns = compute_rloo_outcome_advantage(
+            token_level_rewards=valid_data.batch["token_level_rewards"],
+            response_mask=valid_data.batch["response_mask"],
+            index=valid_data.non_tensor_batch["uid"],
+            trajectory_uids=valid_data.non_tensor_batch["trajectory_uids"],
+        )
+        advantages[valid_mask] = valid_advantages
+        returns[valid_mask] = valid_returns
+    elif adv_key == "gigpo":
+        from arft.core_algos import compute_gigpo_outcome_advantage, compute_step_discounted_returns
+
+        if "anchor_obs" not in valid_data.non_tensor_batch:
+            raise KeyError(
+                "algorithm.adv_estimator='gigpo' requires non_tensor_batch['anchor_obs']. "
+                "Set step.extra_fields['anchor_obs'] in the agent flow before using GiGPO."
+            )
+        step_rewards = compute_step_discounted_returns(
+            token_level_rewards=valid_data.batch["token_level_rewards"],
+            response_mask=valid_data.batch["response_mask"],
+            trajectory_uids=valid_data.non_tensor_batch["trajectory_uids"],
+            step_indices=valid_data.non_tensor_batch["step_indices"],
+            gamma=gamma,
+        )
+        valid_advantages, valid_returns = compute_gigpo_outcome_advantage(
+            token_level_rewards=valid_data.batch["token_level_rewards"],
+            step_rewards=step_rewards,
+            response_mask=valid_data.batch["response_mask"],
+            anchor_obs=valid_data.non_tensor_batch["anchor_obs"],
+            index=valid_data.non_tensor_batch["uid"],
+            trajectory_uids=valid_data.non_tensor_batch["trajectory_uids"],
+            step_advantage_w=gigpo_step_advantage_w,
+            mode=gigpo_mode,
+            enable_similarity=gigpo_enable_similarity,
+            similarity_thresh=gigpo_similarity_thresh,
+        )
+        advantages[valid_mask] = valid_advantages
+        returns[valid_mask] = valid_returns
     else:
         raise ValueError(
             f"RayAgentTrainer.compute_advantage: unsupported adv_estimator={adv_estimator!r} (key={adv_key!r}). "
-            "Supported: 'gae', 'token_gae', 'grpo' → arft.core_algos.*"
+            "Supported: 'gae', 'token_gae', 'grpo', 'reinforce_plus_plus', "
+            "'reinforce_plus_plus_baseline', 'rloo', 'gigpo' → arft.core_algos.*"
         )
 
     data.batch["advantages"] = advantages
@@ -884,6 +952,16 @@ class RayAgentTrainer(RayPPOTrainer):
                             lam=self.config.algorithm.lam,
                             num_repeat=self.config.actor_rollout_ref.rollout.n,
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+                            gigpo_step_advantage_w=self.config.algorithm.get("gigpo", {}).get(
+                                "step_advantage_w", 1.0
+                            ),
+                            gigpo_mode=self.config.algorithm.get("gigpo", {}).get("mode", "mean_std_norm"),
+                            gigpo_enable_similarity=self.config.algorithm.get("gigpo", {}).get(
+                                "enable_similarity", False
+                            ),
+                            gigpo_similarity_thresh=self.config.algorithm.get("gigpo", {}).get(
+                                "similarity_thresh", 0.95
+                            ),
                             config=self.config.algorithm,
                         )
 
