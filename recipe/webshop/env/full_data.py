@@ -378,6 +378,9 @@ class FullProductIndex:
     search_top_k: int = 50
 
     def __post_init__(self) -> None:
+        # Pyserini imports OpenAI in encode submodules at import time; Lucene BM25 does not call it.
+        if not (os.environ.get("OPENAI_API_KEY") or "").strip():
+            os.environ["OPENAI_API_KEY"] = "local-placeholder-pyserini-import-only"
         from pyserini.search.lucene import LuceneSearcher
 
         uri = f"file:{self.db_path}?mode=ro"

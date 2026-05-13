@@ -15,4 +15,12 @@ data/alfworld/
 webshop_data_full/
 webshop_data_small/
 data/webshop_full/
+data/webshop_debug/
 debug/
+mlruns/
+mlartifacts/
+h100/
+h200/
+slurm/
+*.html
+EXPERIMENT_SETTINGS.md
